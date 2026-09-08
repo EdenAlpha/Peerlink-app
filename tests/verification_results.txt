@@ -1,0 +1,68 @@
+PeerLink source patch verification — 2026-08-31
+
+FINAL NATIVE RUN
+Command: bash tests/run_native_tests.sh
+Compiler: g++, C++17, -O1 -g -fsanitize=address,undefined
+Runtime: ASAN_OPTIONS=detect_leaks=0
+Android/JNI: host adapters, not Android runtime
+
+PASS STUN socket cannot steal active gameplay port
+PASS unsupported STUN is preserved for normal networking
+PASS peer source identity remains fabricated peer
+PASS simultaneous socket A keeps port and address
+PASS simultaneous socket B keeps port and address
+PASS same socket follows a verified local-address change
+PASS 1000 mixed port transitions have zero redirects
+PASS endpoint table remains bounded
+PASS non-Binding STUN method is not swallowed
+PASS truncated IPv4 length is rejected
+PASS impossible UDP length is rejected
+PASS fragment body is never parsed as UDP ports
+PASS create UDP socketpair
+PASS empty UDP datagram does not stop backend
+PASS successful STUN callback cannot steal active flow
+PASS successful STUN records only its own local socket
+PASS first inbound after STUN uses that socket's address
+PASS unknown port cannot borrow another socket address
+PASS expired endpoint is discarded without redirect
+PASS new STUN address retires that socket's old exact flow
+PASS address renewal leaves other sockets intact
+PASS restarted backend does not inherit previous mappings
+PASS table cap enforced after 2999 distinct endpoints
+PASS 50000 malformed-packet fuzz cases stay within packet bounds
+PASS lowest and highest UDP destination ports are preserved
+PASS IPv6 endpoint A remains independent
+PASS IPv6 endpoint B remains independent
+SUMMARY checks=27 failures=0
+
+A/B SOURCE COMPARISON
+Harness: tests/port_regression_ab.cpp
+Original production source:
+Synthetic port-interference cases: 1000; wrong destination ports: 1000
+Exit: 1 (expected reproduced defect)
+Patched production source:
+Synthetic port-interference cases: 1000; wrong destination ports: 0
+Exit: 0
+
+Additional patched native host compile:
+g++ -std=c++17 -Os -fno-exceptions -fno-rtti -fno-threadsafe-statics
+    -Werror=format -pthread -Itests/shim tests/port_regression_ab.cpp
+Compile exit: 0
+Run: Synthetic port-interference cases: 1000; wrong destination ports: 0
+Run exit: 0
+
+KOTLIN / ANDROID STATUS
+bash tests/run_stun_tests.sh
+Exit: 2
+NOT RUN: kotlinc is not installed. Alternatively run Gradle testDebugUnitTest with JDK 17+ and Android SDK.
+
+bash ./gradlew --offline testDebugUnitTest
+Exit: 1
+Downloading https://services.gradle.org/distributions/gradle-8.11.1-bin.zip
+Exception in thread "main" java.net.SocketException: Network is unreachable
+The Gradle distribution was not available locally; no Android compilation or
+Kotlin unit test execution occurred. No APK was produced. No live match was run.
+
+ORIGINAL UPLOAD INTEGRITY
+37e86fce71c935b81cc7176da4f5dbc1348217378955da6916e5802a061cd4f9
+Peerlink-main (1) (3).zip — unchanged

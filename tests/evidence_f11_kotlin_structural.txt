@@ -1,0 +1,102 @@
+PASS Kotlin source tree is present
+PASS balanced Kotlin tokens: app/src/main/java/com/peerlink/app/core/AppState.kt
+PASS single package declaration: app/src/main/java/com/peerlink/app/core/AppState.kt
+PASS balanced Kotlin tokens: app/src/main/java/com/peerlink/app/core/CrashLogger.kt
+PASS single package declaration: app/src/main/java/com/peerlink/app/core/CrashLogger.kt
+PASS balanced Kotlin tokens: app/src/main/java/com/peerlink/app/core/MatchData.kt
+PASS single package declaration: app/src/main/java/com/peerlink/app/core/MatchData.kt
+PASS balanced Kotlin tokens: app/src/main/java/com/peerlink/app/core/MatchProtocolReader.kt
+PASS single package declaration: app/src/main/java/com/peerlink/app/core/MatchProtocolReader.kt
+PASS balanced Kotlin tokens: app/src/main/java/com/peerlink/app/core/MatchTracker.kt
+PASS single package declaration: app/src/main/java/com/peerlink/app/core/MatchTracker.kt
+PASS balanced Kotlin tokens: app/src/main/java/com/peerlink/app/discovery/NsdDiscovery.kt
+PASS single package declaration: app/src/main/java/com/peerlink/app/discovery/NsdDiscovery.kt
+PASS balanced Kotlin tokens: app/src/main/java/com/peerlink/app/godmode/AdbConnectClient.kt
+PASS single package declaration: app/src/main/java/com/peerlink/app/godmode/AdbConnectClient.kt
+PASS balanced Kotlin tokens: app/src/main/java/com/peerlink/app/godmode/AdbKeyManager.kt
+PASS single package declaration: app/src/main/java/com/peerlink/app/godmode/AdbKeyManager.kt
+PASS balanced Kotlin tokens: app/src/main/java/com/peerlink/app/godmode/AdbNsdWatcher.kt
+PASS single package declaration: app/src/main/java/com/peerlink/app/godmode/AdbNsdWatcher.kt
+PASS balanced Kotlin tokens: app/src/main/java/com/peerlink/app/godmode/AdbPairingClient.kt
+PASS single package declaration: app/src/main/java/com/peerlink/app/godmode/AdbPairingClient.kt
+PASS balanced Kotlin tokens: app/src/main/java/com/peerlink/app/godmode/DeviceChecker.kt
+PASS single package declaration: app/src/main/java/com/peerlink/app/godmode/DeviceChecker.kt
+PASS balanced Kotlin tokens: app/src/main/java/com/peerlink/app/godmode/GodModeManager.kt
+PASS single package declaration: app/src/main/java/com/peerlink/app/godmode/GodModeManager.kt
+PASS balanced Kotlin tokens: app/src/main/java/com/peerlink/app/godmode/GodModePairingService.kt
+PASS single package declaration: app/src/main/java/com/peerlink/app/godmode/GodModePairingService.kt
+PASS balanced Kotlin tokens: app/src/main/java/com/peerlink/app/godmode/PeerLinkAdbManager.kt
+PASS single package declaration: app/src/main/java/com/peerlink/app/godmode/PeerLinkAdbManager.kt
+PASS balanced Kotlin tokens: app/src/main/java/com/peerlink/app/godmode/PrimeAuth.kt
+PASS single package declaration: app/src/main/java/com/peerlink/app/godmode/PrimeAuth.kt
+PASS balanced Kotlin tokens: app/src/main/java/com/peerlink/app/godmode/PrimeClient.kt
+PASS single package declaration: app/src/main/java/com/peerlink/app/godmode/PrimeClient.kt
+PASS balanced Kotlin tokens: app/src/main/java/com/peerlink/app/godmode/PrimeLadderManager.kt
+PASS single package declaration: app/src/main/java/com/peerlink/app/godmode/PrimeLadderManager.kt
+PASS balanced Kotlin tokens: app/src/main/java/com/peerlink/app/godmode/PrimeServer.kt
+PASS single package declaration: app/src/main/java/com/peerlink/app/godmode/PrimeServer.kt
+PASS balanced Kotlin tokens: app/src/main/java/com/peerlink/app/godmode/PrimeServerMain.kt
+PASS single package declaration: app/src/main/java/com/peerlink/app/godmode/PrimeServerMain.kt
+PASS balanced Kotlin tokens: app/src/main/java/com/peerlink/app/godmode/shizuku/PrimeShizukuAdbMdns.kt
+PASS single package declaration: app/src/main/java/com/peerlink/app/godmode/shizuku/PrimeShizukuAdbMdns.kt
+PASS balanced Kotlin tokens: app/src/main/java/com/peerlink/app/godmode/shizuku/PrimeShizukuBootstrapEngine.kt
+PASS single package declaration: app/src/main/java/com/peerlink/app/godmode/shizuku/PrimeShizukuBootstrapEngine.kt
+PASS balanced Kotlin tokens: app/src/main/java/com/peerlink/app/godmode/shizuku/PrimeShizukuStarter.kt
+PASS single package declaration: app/src/main/java/com/peerlink/app/godmode/shizuku/PrimeShizukuStarter.kt
+PASS balanced Kotlin tokens: app/src/main/java/com/peerlink/app/network/HotspotPairing.kt
+PASS single package declaration: app/src/main/java/com/peerlink/app/network/HotspotPairing.kt
+PASS balanced Kotlin tokens: app/src/main/java/com/peerlink/app/network/LanPathResolver.kt
+PASS single package declaration: app/src/main/java/com/peerlink/app/network/LanPathResolver.kt
+PASS balanced Kotlin tokens: app/src/main/java/com/peerlink/app/service/BootReceiver.kt
+PASS single package declaration: app/src/main/java/com/peerlink/app/service/BootReceiver.kt
+PASS balanced Kotlin tokens: app/src/main/java/com/peerlink/app/service/CallMonitorService.kt
+PASS single package declaration: app/src/main/java/com/peerlink/app/service/CallMonitorService.kt
+PASS balanced Kotlin tokens: app/src/main/java/com/peerlink/app/service/LanLinkForegroundService.kt
+PASS single package declaration: app/src/main/java/com/peerlink/app/service/LanLinkForegroundService.kt
+PASS balanced Kotlin tokens: app/src/main/java/com/peerlink/app/service/PeerLinkVpnService.kt
+PASS single package declaration: app/src/main/java/com/peerlink/app/service/PeerLinkVpnService.kt
+PASS balanced Kotlin tokens: app/src/main/java/com/peerlink/app/tunnel/JitterBuffer.kt
+PASS single package declaration: app/src/main/java/com/peerlink/app/tunnel/JitterBuffer.kt
+PASS balanced Kotlin tokens: app/src/main/java/com/peerlink/app/tunnel/NativeBackendModels.kt
+PASS single package declaration: app/src/main/java/com/peerlink/app/tunnel/NativeBackendModels.kt
+PASS balanced Kotlin tokens: app/src/main/java/com/peerlink/app/tunnel/NativePeerLinkBackend.kt
+PASS single package declaration: app/src/main/java/com/peerlink/app/tunnel/NativePeerLinkBackend.kt
+PASS balanced Kotlin tokens: app/src/main/java/com/peerlink/app/tunnel/PacketParser.kt
+PASS single package declaration: app/src/main/java/com/peerlink/app/tunnel/PacketParser.kt
+PASS balanced Kotlin tokens: app/src/main/java/com/peerlink/app/tunnel/PassthroughBridgeEngine.kt
+PASS single package declaration: app/src/main/java/com/peerlink/app/tunnel/PassthroughBridgeEngine.kt
+PASS balanced Kotlin tokens: app/src/main/java/com/peerlink/app/tunnel/StunFabricator.kt
+PASS single package declaration: app/src/main/java/com/peerlink/app/tunnel/StunFabricator.kt
+PASS balanced Kotlin tokens: app/src/main/java/com/peerlink/app/tunnel/TunnelEngine.kt
+PASS single package declaration: app/src/main/java/com/peerlink/app/tunnel/TunnelEngine.kt
+PASS balanced Kotlin tokens: app/src/main/java/com/peerlink/app/ui/DiscoveryUiState.kt
+PASS single package declaration: app/src/main/java/com/peerlink/app/ui/DiscoveryUiState.kt
+PASS balanced Kotlin tokens: app/src/main/java/com/peerlink/app/ui/MainActivity.kt
+PASS single package declaration: app/src/main/java/com/peerlink/app/ui/MainActivity.kt
+PASS balanced Kotlin tokens: app/src/main/java/com/peerlink/app/ui/PeerLinkScreen.kt
+PASS single package declaration: app/src/main/java/com/peerlink/app/ui/PeerLinkScreen.kt
+PASS native backend declares JNI methods
+PASS JNI implementation exists: nativeStart
+PASS JNI implementation exists: nativeStop
+PASS JNI implementation exists: nativePollStats
+PASS JNI implementation exists: nativeDumpUdpTrace
+PASS JNI implementation exists: nativeRebindPeerSocket
+PASS JNI implementation exists: nativeGetHotThreadTids
+PASS JNI implementation exists: nativeVerifyPeerPath
+PASS JNI implementation exists: nativePollMatchTelemetry
+PASS manifest component exists: com.peerlink.app.ui.MainActivity
+PASS manifest component exists: com.peerlink.app.service.PeerLinkVpnService
+PASS manifest component exists: com.peerlink.app.godmode.GodModePairingService
+PASS manifest component exists: com.peerlink.app.service.CallMonitorService
+PASS manifest component exists: com.peerlink.app.service.BootReceiver
+PASS unused LanLink foreground service is not registered
+PASS F10 integration symbol present: MatchProtocolReader
+PASS F10 integration symbol present: MatchTracker
+PASS F10 integration symbol present: NativeTelemetrySample
+PASS F10 integration symbol present: drainFinalMatchTelemetry
+PASS F10 integration symbol present: rememberVerifiedGameplayPath
+PASS F10 integration symbol present: protocolDecodeDrops
+PASS F10 integration symbol present: FULL_TIME_CONTROL_LEN
+PASS no continuous Wi-Fi scan call remains
+PASS no conflict markers remain
+SUMMARY checks=101 failures=0

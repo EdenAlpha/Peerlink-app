@@ -1,0 +1,10 @@
+.gradle/
+**/build/
+local.properties
+.externalNativeBuild/
+**/.cxx/
+*.orig
+*.rej
+__pycache__/
+*.pyc
+verification/

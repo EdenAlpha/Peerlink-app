@@ -1,0 +1,161 @@
+[
+ {
+  "file": "PCAPdroid_28_Jun_15_53_33.pcap",
+  "n_game": 6937,
+  "snapshotted": 3433,
+  "gated": true,
+  "relay_suspected": false,
+  "keystream_coverage": 44,
+  "handshake": {
+   "probe_by_me": true,
+   "exchange_by_me": false,
+   "port_pair": [
+    24722,
+    56008
+   ]
+  },
+  "port_pair": [
+   24722,
+   56008
+  ],
+  "local_id": "1012115771",
+  "remote_id": "1825107968",
+  "goals": [
+   {
+    "t": 55.814,
+    "scorer": "peer",
+    "player": "1825107968",
+    "phase": "c6",
+    "phase_confirmed": true,
+    "corroborated": true,
+    "msgs": 5
+   }
+  ],
+  "final": "0-1",
+  "result": "LOSS",
+  "decode_drops": 0,
+  "_checks": [
+   "PASS: gated == True",
+   "PASS: final == 0-1",
+   "PASS: result == LOSS",
+   "PASS: handshake evidence recorded (probe/exchange)",
+   "PASS: port pair captured from telemetry v4",
+   "PASS: goal time ~= 55.814",
+   "PASS: scorer == peer",
+   "PASS: player == 1825107968",
+   "PASS: phase confirmed (c6)",
+   "PASS: corroborated by echo",
+   "PASS: no decode drops"
+  ],
+  "_ok": true
+ },
+ {
+  "file": "PCAPdroid_29_Jan_14_32_11.pcap",
+  "n_game": 7954,
+  "snapshotted": 3467,
+  "gated": true,
+  "relay_suspected": false,
+  "keystream_coverage": 41,
+  "handshake": {
+   "probe_by_me": true,
+   "exchange_by_me": false,
+   "port_pair": [
+    20769,
+    58134
+   ]
+  },
+  "port_pair": [
+   20769,
+   58134
+  ],
+  "local_id": "1012115771",
+  "remote_id": "1774133334",
+  "goals": [
+   {
+    "t": 41.984,
+    "scorer": "peer",
+    "player": "1774133334",
+    "phase": "c6",
+    "phase_confirmed": true,
+    "corroborated": true,
+    "msgs": 4
+   }
+  ],
+  "final": "0-1",
+  "result": "LOSS",
+  "decode_drops": 0,
+  "_checks": [
+   "PASS: gated == True",
+   "PASS: final == 0-1",
+   "PASS: result == LOSS",
+   "PASS: handshake evidence recorded (probe/exchange)",
+   "PASS: port pair captured from telemetry v4",
+   "PASS: goal time ~= 41.984",
+   "PASS: scorer == peer",
+   "PASS: player == 1774133334",
+   "PASS: phase confirmed (c6)",
+   "PASS: corroborated by echo",
+   "PASS: no decode drops"
+  ],
+  "_ok": true
+ },
+ {
+  "file": "PCAPdroid_06_Jan_14_29_23.pcap",
+  "n_game": 44140,
+  "snapshotted": 92,
+  "gated": false,
+  "relay_suspected": true,
+  "keystream_coverage": 0,
+  "handshake": null,
+  "port_pair": [
+   5735,
+   46220
+  ],
+  "local_id": null,
+  "remote_id": null,
+  "goals": [],
+  "final": "0-0",
+  "result": "RELAY",
+  "decode_drops": 0,
+  "_checks": [
+   "PASS: gated == False",
+   "PASS: final == 0-0",
+   "PASS: result == RELAY",
+   "PASS: no decode drops"
+  ],
+  "_ok": true
+ },
+ {
+  "phase2": "synthetic user-scored goal (real cipher, flipped direction)",
+  "n_events": 2,
+  "final": "1-1",
+  "goals": [
+   {
+    "t": 55.814,
+    "scorer": "peer",
+    "phase": "c6",
+    "confirmed": true,
+    "corroborated": true,
+    "player": "1825107968"
+   },
+   {
+    "t": 170.0,
+    "scorer": "me",
+    "phase": "c6",
+    "confirmed": true,
+    "corroborated": true,
+    "player": "1012115771"
+   }
+  ],
+  "_checks": [
+   "PASS: two goals total (1 real peer + 1 synthetic mine)",
+   "PASS: final 1-1",
+   "PASS: synthetic goal attributed to ME",
+   "PASS: mine goal phase-confirmed c6",
+   "PASS: mine goal corroborated by peer echo",
+   "PASS: mine goal player id == 1012115771",
+   "PASS: mine goal time ~170s"
+  ],
+  "_ok": true
+ }
+]

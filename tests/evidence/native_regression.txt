@@ -1,0 +1,47 @@
+PASS STUN socket cannot steal active gameplay port
+PASS unsupported STUN is preserved for normal networking
+PASS peer source identity remains fabricated peer
+PASS simultaneous socket A keeps port and address
+PASS simultaneous socket B keeps port and address
+PASS same socket follows a verified local-address change
+PASS 1000 mixed port transitions have zero redirects
+PASS endpoint table remains bounded
+PASS non-Binding STUN method is not swallowed
+PASS truncated IPv4 length is rejected
+PASS impossible UDP length is rejected
+PASS fragment body is never parsed as UDP ports
+PASS create UDP socketpair
+PASS control datagrams preserve TX timestamp ID alignment
+PASS empty UDP datagram does not stop backend
+PASS out-of-order kernel TX stages join the correct packet
+PASS successful STUN callback cannot steal active flow
+PASS successful STUN records only its own local socket
+PASS first inbound after STUN uses that socket's address
+PASS unknown port cannot borrow another socket address
+PASS expired endpoint is discarded without redirect
+PASS new STUN address retires that socket's old exact flow
+PASS address renewal leaves other sockets intact
+PASS restarted backend does not inherit previous mappings
+PASS table cap enforced after 2999 distinct endpoints
+PASS 50000 malformed-packet fuzz cases stay within packet bounds
+PASS lowest and highest UDP destination ports are preserved
+PASS IPv6 endpoint A remains independent
+PASS IPv6 endpoint B remains independent
+PASS enqueue control TUN job
+PASS enqueue gameplay TUN job
+PASS gameplay injection bypasses older control traffic
+PASS control producer lock cannot block gameplay enqueue
+PASS runtime warnings are deferred off packet threads
+PASS match counters cover every game packet
+PASS score telemetry filters irrelevant payload sizes
+PASS full-time control packets are retained for settlement proof
+PASS filtered telemetry preserves direction length and 60-byte head
+PASS full score ring drops snapshots instead of blocking gameplay
+PASS peer queue fills to its exact bound
+PASS peer queue overflow rejected
+PASS queue overflow counted exactly once
+PASS truth trace preserves enqueue and actual TUN-write stages
+PASS live trace export never blocks or races the datapath writer
+PASS TUN queue preserves remote sender identity for trace joining
+PASS queued TUN job retains trace sender identity
+SUMMARY checks=46 failures=0

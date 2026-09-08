@@ -1,0 +1,5 @@
+PASS version-2 trace parses
+PASS path delay is distinguished from sender spacing
+PASS gap followed by burst is detected
+PASS actual TUN-write metric is reported
+SUMMARY checks=4 failures=0

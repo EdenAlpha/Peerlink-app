@@ -1,0 +1,156 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- Haptic feedback -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+
+    <!-- Core network -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <queries>
+        <package android:name="jp.konami.pesam" />
+    </queries>
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Manual GOAL / FT marker shown over eFootball during diagnostic sessions. -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
+
+    <!-- Nearby Wi-Fi devices -->
+    <uses-permission
+        android:name="android.permission.NEARBY_WIFI_DEVICES"
+        android:usesPermissionFlags="neverForLocation" />
+
+    <!-- Foreground service -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- Call-block service runs as a phoneCall foreground service on Android 14+ -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_PHONE_CALL" />
+
+    <!-- Notifications -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!-- Phone State / Call Blocking -->
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+    <uses-permission android:name="android.permission.READ_CALL_LOG" />
+    <!-- Required for TelecomManager.endCall() on API 28+ -->
+    <uses-permission android:name="android.permission.ANSWER_PHONE_CALLS" />
+    <!-- Required to act as call screening service for silent rejection -->
+    <uses-permission android:name="android.permission.MANAGE_OWN_CALLS" />
+
+    <!-- Boot receiver -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <!-- Prime Mode — ADB wireless debugging permission grant -->
+    <uses-permission android:name="android.permission.WRITE_SECURE_SETTINGS" />
+
+    <!--
+      Battery-optimisation exemption request.
+      On Android 14+ (and especially Android 15) the OS aggressively suspends
+      apps that aren't on the doze whitelist. Prime Mode adds this via ADB
+      (dumpsys deviceidle whitelist +<pkg>) but users who haven't enabled
+      Prime Mode still need the in-app request path so the system dialog can
+      put the app on the whitelist. This permission lets us call
+      ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS from PeerLinkApp.onCreate
+      when the app first launches and the user hasn't yet exempted us.
+    -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
+    <application
+        android:name=".core.PeerLinkApp"
+        android:allowBackup="false"
+        android:icon="@mipmap/ic_launcher"
+        android:label="PeerLink"
+        android:roundIcon="@mipmap/ic_launcher"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.PeerLink"
+        android:hardwareAccelerated="true"
+        android:usesCleartextTraffic="true"
+        tools:replace="android:allowBackup,android:label"
+        tools:targetApi="36">
+
+        <!-- Main Activity -->
+        <activity
+            android:name=".ui.MainActivity"
+            android:exported="true"
+            android:screenOrientation="portrait"
+            android:launchMode="singleTop"
+            android:theme="@style/Theme.PeerLink">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- VPN Service -->
+        <!--
+            foregroundServiceType="connectedDevice".
+            The VPN service is started by the system VpnService infrastructure
+            (not by the app calling startForegroundService), so the
+            ForegroundServiceStartNotAllowedException that affects app-started
+            services doesn't apply here — the system itself is starting us.
+
+            We tried switching to "specialUse" for Android 15 hardening, but
+            that broke Android 13 (Hot 30i) because specialUse was only added
+            in API 34 and the system rejects unknown FGS types on older
+            versions. connectedDevice works on Android 13+ and is the most
+            accurate available classification for a peer-to-peer IP tunnel
+            (we ARE communicating with an external peer device — the other
+            phone over Wi-Fi).
+        -->
+        <service
+            android:name=".service.PeerLinkVpnService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice"
+            android:permission="android.permission.BIND_VPN_SERVICE">
+            <intent-filter>
+                <action android:name="android.net.VpnService" />
+            </intent-filter>
+        </service>
+
+        <!-- Prime Mode — ADB wireless debugging pairing service -->
+        <service
+            android:name=".godmode.GodModePairingService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Maintains local ADB wireless debugging session for WiFi low-latency lock" />
+        </service>
+
+        <!-- Keeps Prime's in-app directors alive while eFootball is foreground
+             and independently supervises the detached privileged engine. -->
+        <service
+            android:name=".service.LanLinkForegroundService"
+            android:exported="false"
+            android:stopWithTask="false"
+            android:foregroundServiceType="dataSync" />
+
+        <!-- Call Blocker Service — silently declines calls during gameplay.
+             phoneCall foregroundServiceType is required on Android 14+ (the app
+             targets SDK 36); without this <service> declaration the service
+             cannot start at all and call-block silently never runs. -->
+        <service
+            android:name=".service.CallMonitorService"
+            android:exported="false"
+            android:foregroundServiceType="phoneCall"
+            android:stopWithTask="false" />
+
+        <!-- Boot receiver -->
+        <receiver
+            android:name=".service.BootReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
+    </application>
+</manifest>

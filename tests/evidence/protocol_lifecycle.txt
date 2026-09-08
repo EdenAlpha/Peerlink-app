@@ -1,0 +1,60 @@
+PASS 28_Jun: PMT2 parses
+PASS 28_Jun: bidirectional protocol gate converges
+PASS 28_Jun: score is 0-1
+PASS 28_Jun: every counted goal has peer echo
+PASS 28_Jun: measured full-time control burst is present
+PASS 29_Jan: PMT2 parses
+PASS 29_Jan: bidirectional protocol gate converges
+PASS 29_Jan: score is 0-1
+PASS 29_Jan: every counted goal has peer echo
+PASS 29_Jan: measured full-time control burst is present
+PASS 16_Mar: PMT2 parses
+PASS 16_Mar: non-eFootball flow rejected
+PASS 03_Jul_30_relay: PMT2 parses
+PASS 03_Jul_30_relay: non-eFootball flow rejected
+PASS 03_Jul_34_relay: PMT2 parses
+PASS 03_Jul_34_relay: non-eFootball flow rejected
+PASS 06_Jan_relay: PMT2 parses
+PASS 06_Jan_relay: non-eFootball flow rejected
+PASS PMT2 rejects a truncated header
+PASS PMT2 rejects a truncated event
+PASS PMT2 rejects wrong magic
+PASS PMT2 rejects unknown version
+PASS PMT2 rejects wrong event size
+PASS PMT2 rejects invalid direction
+PASS PMT2 rejects oversized head
+PASS goal arriving before table convergence is replayed, not lost
+PASS pre-gate event buffering is bounded and fail-closed
+PASS PeerCoin matrix 0-0 = 0 cents
+PASS PeerCoin matrix 1-0 = 30 cents
+PASS PeerCoin matrix 0-1 = -13 cents
+PASS PeerCoin matrix 3-2 = 50 cents
+PASS PeerCoin matrix 3-0 = 60 cents
+PASS PeerCoin matrix 0-3 = -93 cents
+PASS PeerCoin matrix 3-3 = 0 cents
+PASS full corpus gate PCAPdroid_28_Jun_15_53_33.pcap = True
+PASS full corpus gate PCAPdroid_29_Jan_14_32_11.pcap = True
+PASS full corpus gate PCAPdroid_16_Mar_08_00_42.pcap = False
+PASS full corpus gate PCAPdroid_03_Jul_11_46_30.pcap = False
+PASS full corpus gate PCAPdroid_03_Jul_11_46_34.pcap = False
+PASS full corpus gate PCAPdroid_06_Jan_14_29_23.pcap = False
+PASS full corpus gate PCAPdroid_31_Jan_22_41_15.pcap = False
+PASS full corpus gate PCAPdroid_04_Feb_12_58_41.pcap = False
+PASS finalized reader is replaced after idle
+PASS disconnect is explicitly incomplete
+PASS silence alone cannot settle PeerCoins
+PASS record IDs include session and segment
+PASS legacy confirmation defaults fail closed
+PASS ledger rejects duplicate IDs
+PASS ledger uses fsync and atomic move
+PASS gameplay and control TUN queues are isolated
+PASS score hot path uses SPSC rings, not an event mutex
+PASS shutdown drains telemetry after stopping its periodic consumer
+PASS telemetry rejects cross-poll ordinal or counter rollback
+PASS continuous Wi-Fi scanning removed
+PASS log export includes native UDP truth trace off the UI thread
+PASS lost Wi-Fi path gets immediate recovery when it returns
+PASS Linux transmit timestamp IDs start at zero
+PASS corrected StunFabricator.kt is installed
+PASS corrected PacketParser.kt is installed
+SUMMARY checks=59 failures=0

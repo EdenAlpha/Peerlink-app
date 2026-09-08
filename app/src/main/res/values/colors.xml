@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- ════════════════════════════════════════════════════════════════
+         PeerLink palette — fixed LIGHT theme. Gold + orange are the heroes,
+         silver-grey is the structure, red/blue/green are sparse accents only.
+         (No dark mode, no light/dark toggle — one designed look.)
+         ════════════════════════════════════════════════════════════════ -->
+    <color name="peerlink_canvas">#ECEEF0</color>   <!-- app background — light silver -->
+    <color name="peerlink_surface">#FFFFFF</color>  <!-- cards / raised surfaces -->
+    <color name="peerlink_surface_alt">#F4F6F8</color>
+    <color name="peerlink_gold">#F0BE43</color>     <!-- signature -->
+    <color name="peerlink_gold_deep">#C9961F</color>
+    <color name="peerlink_orange">#FB8C3A</color>   <!-- signature -->
+    <color name="peerlink_orange_deep">#E26A1A</color>
+    <color name="peerlink_silver">#9AA1AA</color>   <!-- brushed-metal mid grey -->
+    <color name="peerlink_silver_line">#D7DBDF</color> <!-- borders / dividers -->
+    <color name="peerlink_graphite">#2C2F36</color> <!-- primary text -->
+    <color name="peerlink_graphite_soft">#5A616B</color> <!-- secondary text -->
+    <color name="peerlink_muted">#8A929C</color>    <!-- hint text -->
+    <color name="peerlink_red">#E0556E</color>      <!-- accent — danger -->
+    <color name="peerlink_blue">#3E8FD4</color>     <!-- accent — info -->
+    <color name="peerlink_green">#2EA56A</color>    <!-- accent — success -->
+
+    <!-- ── Legacy (dark) tokens — retained so any stray @color reference still resolves
+         during the rebuild. Safe to delete once the old Compose theme is fully gone. ── -->
+    <color name="oled_black">#080A0F</color>
+    <color name="glass_surface">#0Dffffff</color>
+    <color name="glass_surface_heavy">#1Affffff</color>
+    <color name="titanium_border">#18ffffff</color>
+    <color name="text_titanium">#F3F4F8</color>
+    <color name="text_muted">#8B909D</color>
+    <color name="apex_yellow">#F0BE43</color>
+    <color name="wine_red">#E0556E</color>
+    <color name="success_neon">#3DD68C</color>
+    <color name="primary_dark">#080A0F</color>
+    <color name="primary">#0C0F15</color>
+    <color name="primary_light">#1A1F28</color>
+    <color name="accent">#F0BE43</color>
+    <color name="accent_light">#F7E394</color>
+    <color name="accent_dim">#8A6A22</color>
+    <color name="success">#3DD68C</color>
+    <color name="success_dim">#1F8F63</color>
+    <color name="warning">#F0BE43</color>
+    <color name="error">#E0556E</color>
+    <color name="surface">#12161D</color>
+    <color name="surface_variant">#1A1F28</color>
+    <color name="navy_void">#080A0F</color>
+    <color name="navy_base">#0C0F15</color>
+    <color name="navy_surface">#12161D</color>
+    <color name="navy_raised">#1A1F28</color>
+    <color name="navy_rim">#18ffffff</color>
+    <color name="navy_card_rim">#0Fffffff</color>
+    <color name="navy_text_primary">#F3F4F8</color>
+    <color name="navy_text_second">#C6CBD5</color>
+    <color name="navy_text_muted">#8B909D</color>
+    <color name="navy_active">#F0BE43</color>
+    <color name="navy_danger">#E0556E</color>
+    <color name="navy_success">#3DD68C</color>
+</resources>

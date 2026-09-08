@@ -1,0 +1,56 @@
+PASS Prime paired UI uses durable setup evidence
+PASS Prime paired UI does not treat every non-NOT_PAIRED state as paired
+PASS Developer Options action remains present
+PASS In-app pairing accepts CODE or PORT:CODE
+PASS Pairing notification deep-links to Prime setup
+PASS Failed pairing attempts remain alive
+PASS Pairing listener has no fixed discovery lifetime
+PASS Pair attempt still has a bounded timeout
+PASS Discovery peers are keyed by endpoint
+PASS Discovery carries a stable device id
+PASS Same display names are not rejected
+PASS Discovery source freshness is merged by peer IP
+PASS Discovery announces permission and Wi-Fi wait states
+PASS Hotspot listener is restarted before a delayed pair request
+PASS Session phase PAIRING exists
+PASS Session phase STARTING_TUNNEL exists
+PASS Session phase VERIFYING_PATH exists
+PASS Session phase ACTIVE exists
+PASS Session phase ERROR exists
+PASS Connected is set only after bidirectional path verification
+PASS Connection verification is shown to the user
+PASS Connection attempt is cancellable
+PASS Cancelling pairing does not stop continuous discovery
+PASS VPN permission denial exits the pending state
+PASS A vanished selected peer fails instead of hanging forever
+PASS VPN interface creation failure is user-visible
+PASS No process-killing RAM clear command
+PASS No cache-trimming pseudo optimization
+PASS No hidden Wi-Fi suspend setting in new activation
+PASS No deprecated Wi-Fi sleep policy in new activation
+PASS No captive-portal mutation in new activation
+PASS No global Wi-Fi band mutation in new activation
+PASS Legacy changed settings remain restorable
+PASS UI does not claim RAM pinning
+PASS Fake Network Prime tool is removed
+PASS Fake local-only SettingRow switches are removed
+PASS Prime uses a per-install authentication token
+PASS Token reaches the app_process server
+PASS Old unauthenticated Prime server is rejected
+PASS Prime request input is bounded
+PASS Prime command output is bounded
+PASS Forgetting pairing shuts down the old server
+PASS Forgetting pairing rotates the token
+PASS VPN acquires Android low-latency Wi-Fi mode
+PASS VPN releases its low-latency Wi-Fi lock
+PASS Reboot-long Prime server holds no Wi-Fi lock
+PASS Startup never opens Wi-Fi Settings automatically
+PASS Auto Wi-Fi runs through the background Prime scope
+PASS Activity destruction never restores or disables Wi-Fi
+PASS Foreground-service destruction preserves user radio state
+PASS No automatic Wi-Fi disable command remains
+PASS Battery protection is an explicit user action
+PASS Misleading jitter-buffer UI is removed
+PASS Legacy Kotlin jitter buffer is hard-disabled
+PASS UI states direct native pacing truthfully
+SUMMARY checks=55 failures=0

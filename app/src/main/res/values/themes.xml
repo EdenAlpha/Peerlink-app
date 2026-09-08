@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.PeerLink" parent="Theme.Material3.Dark.NoActionBar">
+        <item name="colorPrimary">#D2F47A</item>
+        <item name="colorOnPrimary">#111318</item>
+        <item name="colorSecondary">#B5A2FF</item>
+        <item name="colorOnSecondary">#111318</item>
+        <item name="android:windowBackground">#111318</item>
+        <item name="colorSurface">#21242D</item>
+        <item name="colorOnSurface">#F6F5F0</item>
+        <item name="android:statusBarColor">#111318</item>
+        <item name="android:navigationBarColor">#181B22</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+    </style>
+</resources>

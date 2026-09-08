@@ -1,0 +1,7 @@
+gradlew text eol=lf
+*.sh text eol=lf
+# Binary files — never convert line endings
+*.so binary
+*.o binary
+*.a binary
+assets/prime/bin/** binary

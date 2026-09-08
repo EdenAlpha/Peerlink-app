@@ -1,0 +1,1485 @@
+--- a/.github/workflows/build-apk.yml
++++ b/.github/workflows/build-apk.yml
+@@ -1,4 +1,4 @@
+-name: Build PeerLink F25
++name: Build PeerLink F26
+ 
+ on:
+   push:
+@@ -27,14 +27,14 @@
+     steps:
+       - uses: actions/checkout@v4
+ 
+-      # Sources are already assembled. Tests must never patch the application.
+-      - name: Run native and source integration checks
+-        run: python3 tests/run_checks.py
+-
+       - uses: actions/setup-java@v4
+         with:
+           distribution: temurin
+           java-version: '21'
++
++      # Sources are already assembled. Tests must never patch the application.
++      - name: Run native, JVM and source integration checks
++        run: python3 tests/run_checks.py
+ 
+       - uses: gradle/actions/setup-gradle@v4
+ 
+@@ -50,7 +50,7 @@
+         uses: actions/upload-artifact@v4
+         if: always()
+         with:
+-          name: PeerLink-F25-build
++          name: PeerLink-F26-build
+           path: |
+             app/build/outputs/apk/debug/*.apk
+             app/build/reports/tests/
+--- a/app/build.gradle.kts
++++ b/app/build.gradle.kts
+@@ -17,8 +17,8 @@
+         applicationId = "com.peerlink.app"
+         minSdk = 26
+         targetSdk = 36
+-        versionCode = 6
+-        versionName = "5.0.1-f25"
++        versionCode = 7
++        versionName = "5.0.2-f26"
+         // User-facing name, kept separate from applicationId so existing installs keep their data.
+         resValue("string", "app_displayed_name", "PeerLink")
+         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+--- /dev/null
++++ b/app/src/main/java/com/peerlink/app/network/GameplayPathPolicy.java
+@@ -0,0 +1,58 @@
++package com.peerlink.app.network;
++
++import java.util.Collection;
++import java.util.Objects;
++
++/** Android-independent decisions for a socket bound to one IPv4 LAN path.
++ * The service serializes calls on its gameplay refresh lock. Times are elapsed
++ * realtime, never the wall clock. No radio quality or reachability is inferred.
++ */
++public final class GameplayPathPolicy {
++    private final long retryIntervalMs;
++    private String boundIdentity;
++    private String attemptedIdentity;
++    private long retryAtMs;
++
++    public GameplayPathPolicy(long retryIntervalMs) {
++        if (retryIntervalMs < 0) throw new IllegalArgumentException("Negative retry interval");
++        this.retryIntervalMs = retryIntervalMs;
++    }
++
++    public static boolean matchesLockedPath(String localIp, String interfaceName,
++            String candidateInterface, Collection<String> candidateAddresses) {
++        return localIp != null && !localIp.isEmpty() && interfaceName != null &&
++                !interfaceName.isEmpty() && interfaceName.equals(candidateInterface) &&
++                candidateAddresses.contains(localIp);
++    }
++
++    public static String identity(String networkId, String interfaceName, String localIp) {
++        // IPv6 rotation, address ordering, DNS, RSSI, and validation do not
++        // change the IPv4 socket's source path.
++        return networkId + "|" + interfaceName + "|" + localIp;
++    }
++
++    public void rememberBound(String identity) {
++        boundIdentity = identity;
++        attemptedIdentity = null;
++        retryAtMs = 0;
++    }
++
++    public void markLost() {
++        boundIdentity = null;
++    }
++
++    public boolean needsRebind(String identity) {
++        return identity != null && !identity.equals(boundIdentity);
++    }
++
++    public long retryDelayMs(String identity, long nowMs) {
++        if (!Objects.equals(identity, attemptedIdentity)) return 0;
++        return Math.max(0, retryAtMs - nowMs);
++    }
++
++    public void recordAttempt(String identity, long nowMs, boolean succeeded) {
++        attemptedIdentity = identity;
++        retryAtMs = nowMs + retryIntervalMs;
++        if (succeeded) boundIdentity = identity;
++    }
++}
+--- a/app/src/main/java/com/peerlink/app/network/LanPathResolver.kt
++++ b/app/src/main/java/com/peerlink/app/network/LanPathResolver.kt
+@@ -37,6 +37,7 @@
+         val peer = runCatching { InetAddress.getByName(peerIpText) as? Inet4Address }
+             .getOrNull() ?: return null
+         val candidates = collectCandidates(context, requirePrivate = false)
++            .filter { it.path.isWifiTransport || isWifiLikeInterface(it.path.interfaceName) }
+             .filter { sameSubnet(it.pathAddress, peer, it.path.prefixLength) }
+             .map { candidate ->
+                 var score = candidate.score
+@@ -50,6 +51,7 @@
+         // connect() does not send a datagram, so this is a side-effect-free
+         // route lookup while the VPN is not yet active.
+         resolveViaKernelRoute(peer)?.let { routed ->
++            if (!routed.isWifiTransport && !isWifiLikeInterface(routed.interfaceName)) return@let
+             val existing = candidates.any { it.path.localIp == routed.localIp }
+             candidates += ScoredPath(routed, if (existing) 15_000 else 12_000 + interfaceScore(routed.interfaceName), routedAddress(routed))
+         }
+@@ -77,6 +79,13 @@
+             }
+             .maxByOrNull { it.score }
+             ?.path
++
++    /** Validate the saved source address against the live interface, not an old index alone. */
++    fun isStillAvailable(path: LanPath): Boolean = runCatching {
++        val nif = NetworkInterface.getByName(path.interfaceName) ?: return@runCatching false
++        nif.index == path.interfaceIndex && isUsableInterface(nif) &&
++            nif.interfaceAddresses.any { it.address is Inet4Address && it.address.hostAddress == path.localIp }
++    }.getOrDefault(false)
+ 
+     private data class ScoredPath(
+         val path: LanPath,
+@@ -189,7 +198,8 @@
+     }.getOrDefault(false)
+ 
+     private fun isUsableLocal(address: Inet4Address): Boolean =
+-        !address.isLoopbackAddress && !address.isLinkLocalAddress && !address.isMulticastAddress
++        !address.isAnyLocalAddress && !address.isLoopbackAddress &&
++            !address.isLinkLocalAddress && !address.isMulticastAddress
+ 
+     private fun isPrivateIpv4(address: Inet4Address): Boolean {
+         val b = address.address.map { it.toInt() and 0xFF }
+--- /dev/null
++++ b/app/src/main/java/com/peerlink/app/network/UdpProxySockets.java
+@@ -0,0 +1,34 @@
++package com.peerlink.app.network;
++
++import java.io.IOException;
++import java.net.DatagramSocket;
++import java.net.Inet6Address;
++import java.net.InetSocketAddress;
++import java.net.StandardProtocolFamily;
++import java.nio.channels.DatagramChannel;
++
++/** Shared socket creation for IPv4/IPv6 Internet passthrough. */
++public final class UdpProxySockets {
++    private UdpProxySockets() {}
++
++    public interface Preparer {
++        boolean prepare(DatagramSocket socket) throws IOException;
++    }
++
++    public static DatagramChannel openConnected(InetSocketAddress peer, Preparer preparer) throws IOException {
++        DatagramChannel channel = DatagramChannel.open(peer.getAddress() instanceof Inet6Address
++                ? StandardProtocolFamily.INET6 : StandardProtocolFamily.INET);
++        boolean success = false;
++        try {
++            channel.configureBlocking(false);
++            if (!preparer.prepare(channel.socket())) throw new IOException("VPN socket protection failed");
++            // read()/write() require a connected DatagramChannel. A proxy uses
++            // its own ephemeral OS port; the original flow stays in its map.
++            channel.connect(peer);
++            success = true;
++            return channel;
++        } finally {
++            if (!success) channel.close();
++        }
++    }
++}
+--- a/app/src/main/java/com/peerlink/app/service/PeerLinkVpnService.kt
++++ b/app/src/main/java/com/peerlink/app/service/PeerLinkVpnService.kt
+@@ -7,16 +7,20 @@
+ import android.content.Intent
+ import android.net.ConnectivityManager
+ import android.net.Network
++import android.net.LinkProperties
+ import android.net.NetworkCapabilities
+ import android.net.NetworkRequest
+ import android.net.VpnService
+ import android.os.Build
+ import android.os.ParcelFileDescriptor
++import android.os.SystemClock
+ import com.peerlink.app.core.AppState
+ import com.peerlink.app.core.MatchTracker
+ import com.peerlink.app.core.PeerSessionPhase
+ import com.peerlink.app.godmode.GodModeManager
+ import com.peerlink.app.network.LanPathResolver
++import com.peerlink.app.network.LanPath
++import com.peerlink.app.network.GameplayPathPolicy
+ import com.peerlink.app.tunnel.NativeBackendConfig
+ import com.peerlink.app.tunnel.NativeBackendStats
+ import com.peerlink.app.tunnel.NativePeerLinkBackend
+@@ -27,6 +31,8 @@
+ import java.io.FileDescriptor
+ import java.util.concurrent.Executors
+ import java.util.concurrent.ScheduledExecutorService
++import java.util.concurrent.ScheduledFuture
++import java.util.concurrent.ConcurrentHashMap
+ import java.util.concurrent.TimeUnit
+ import java.lang.ref.WeakReference
+ import java.net.DatagramSocket
+@@ -45,13 +51,8 @@
+         const val NOTIFICATION_CHANNEL_ID = "lanlink_vpn"
+         const val NOTIFICATION_ID = 1
+         const val EFOOTBALL_PACKAGE = "jp.konami.pesam"
+-        // Minimum gap between forced peer-socket rebinds. Wi-Fi RSSI/capability
+-        // changes and brief AP flaps shouldn't each cause a socket tear-down —
+-        // the native backend can ride through most transient glitches if we
+-        // just leave it alone for a few seconds. Without this cooldown, a
+-        // momentary Wi-Fi flap could trigger 3-5 rebinds in rapid succession,
+-        // each one causing a 100-500ms packet loss window that eFootball
+-        // interprets as a disconnect.
++        // Retry failures on the same path at most once per interval. A newly
++        // available exact path can recover immediately.
+         const val REBIND_COOLDOWN_MS: Long = 5_000L
+ 
+         // ── Session-state persistence (for auto-restart after process kill) ──
+@@ -111,7 +112,8 @@
+         }
+ 
+         fun requestGameplayPathRefresh(reason: String) {
+-            activeServiceRef?.get()?.refreshGameplayPath(reason, force = true)
++            val service = activeServiceRef?.get() ?: return
++            service.postGameplayNetworkEvent { service.refreshGameplayPath(reason) }
+         }
+ 
+         fun prepareAuxDatagramSocket(socket: DatagramSocket, preferGameplayNetwork: Boolean = true): Boolean {
+@@ -134,16 +136,15 @@
+     private var passthroughBridgeEngine: PassthroughBridgeEngine? = null
+     private val stopVpnGuard = java.util.concurrent.atomic.AtomicBoolean(false)
+     private val stopCleanupStarted = java.util.concurrent.atomic.AtomicBoolean(false)
+-    private var gameplayMonitorExecutor: ScheduledExecutorService? = null
+-    @Volatile private var lastGameplayNetworkIdentity: String? = null
+-    @Volatile private var gameplayRefreshAllowedAtMs: Long = 0L
++    @Volatile private var gameplayMonitorExecutor: ScheduledExecutorService? = null
+     private val gameplayRefreshLock = Any()
+-    // Timestamp of the last successful rebind. Used by the NetworkCallback's
+-    // onLost handler to enforce a cooldown — without this, AP roaming or
+-    // momentary Wi-Fi flaps could trigger a rebind storm that tears down the
+-    // peer socket multiple times in quick succession, each one causing a
+-    // 100-500ms packet loss window that eFootball interprets as a disconnect.
+-    @Volatile private var lastRebindMs: Long = 0L
++    private val gameplayPathPolicy = GameplayPathPolicy(REBIND_COOLDOWN_MS)
++    @Volatile private var lockedLanPath: LanPath? = null
++    @Volatile private var boundGameplayNetwork: Network? = null
++    @Volatile private var preparedGameplayNetwork: Network? = null
++    private val gameplayLinkProperties = ConcurrentHashMap<Network, LinkProperties>()
++    private val lostGameplayNetworks = ConcurrentHashMap.newKeySet<Network>()
++    private var gameplayRetry: ScheduledFuture<*>? = null
+     private var tunnelWakeLock: android.os.PowerManager.WakeLock? = null
+     private var wifiLowLatencyLock: android.net.wifi.WifiManager.WifiLock? = null
+     private var notificationRefreshExecutor: ScheduledExecutorService? = null
+@@ -152,14 +153,7 @@
+     private val serviceDestroyed = java.util.concurrent.atomic.AtomicBoolean(false)
+     private val startupInFlight = java.util.concurrent.atomic.AtomicBoolean(false)
+     private val startupCancelled = java.util.concurrent.atomic.AtomicBoolean(false)
+-    // NetworkCallback registered against Wi-Fi transports — fires the moment
+-    // the gameplay network becomes unavailable (Wi-Fi flap, AP roaming, signal
+-    // loss, hotspot host sleep). The former 1-second gameplay-path monitor was
+-    // slow to catch transient losses and the bound peer socket would die
+-    // silently before the next refresh tick. The callback triggers an immediate
+-    // refresh + underlying-network reset so the VPN falls back to whatever is
+-    // still up (cellular if necessary, though that breaks the session — at
+-    // least we don't hang on to a dead Network object).
++    // Callback snapshots are processed in order on the path monitor executor.
+     private var gameplayNetworkCallback: ConnectivityManager.NetworkCallback? = null
+ 
+     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+@@ -344,6 +338,7 @@
+             // here can accidentally choose cellular instead of the SoftAP.
+             val lanPath = LanPathResolver.resolveForPeer(this, peerLanIp)
+                 ?: throw IllegalStateException("No local LAN interface can reach peer $peerLanIp")
++            lockedLanPath = lanPath
+             AppState.localIp.set(lanPath.localIp)
+             AppState.localLanInterfaceName.set(lanPath.interfaceName)
+             AppState.localLanInterfaceIndex.set(lanPath.interfaceIndex)
+@@ -448,6 +443,11 @@
+ 
+                     override fun onStats(stats: NativeBackendStats) {
+                         AppState.tunneled.set(stats.totalTunneledPackets)
++                        if (!stats.backendRunning && !stopVpnGuard.get()) {
++                            AppState.sessionError.set("The packet connection stopped. Reconnect to your player.")
++                            AppState.appendLog("[VPN-UNDER ] Native packet workers stopped; closing the VPN session")
++                            stopVpn()
++                        }
+                     }
+                 },
+             )
+@@ -499,8 +499,6 @@
+             )
+             nativeBackend!!.startPolling()
+ 
+-            gameplayRefreshAllowedAtMs = System.currentTimeMillis() + 5000L
+-            rememberVerifiedGameplayPath()
+             startGameplayPathMonitor()
+ 
+             // Acquire PARTIAL_WAKE_LOCK to prevent Android from suspending the
+@@ -594,32 +592,21 @@
+     }
+ 
+     private fun prepareNativePeerSocket(fdForBinding: Int): Boolean {
+-        val transportMode = canonicalTransportMode()
+-        var protectedOk = false
+-        var bindOk = false
+-        try {
+-            protectedOk = protect(fdForBinding)
+-            AppState.appendLog("[VPN-UNDER ] Native peer socket protect=${if (protectedOk) "ok" else "failed"}")
++        // Native owns the passed descriptor. fromFd duplicates it so every JNI
++        // success/exception path has explicit ownership and closes exactly once.
++        return try {
++            ParcelFileDescriptor.fromFd(fdForBinding).use { pfd ->
++                if (!protect(pfd.fd)) {
++                    AppState.appendLog("[VPN-UNDER ] Native peer socket protection failed")
++                    false
++                } else {
++                    bindSocketFdToPreferredNetwork(pfd.fileDescriptor)
++                }
++            }
+         } catch (e: Exception) {
+-            AppState.appendLog("[VPN-UNDER ] Native peer socket protect error: ${e.message}")
+-        }
+-
+-        try {
+-            updateUnderlyingNetworks()
+-        } catch (e: Exception) {
+-            AppState.appendLog("[VPN-UNDER ] updateUnderlyingNetworks error: ${e.message}")
+-        }
+-
+-        try {
+-            ParcelFileDescriptor.adoptFd(fdForBinding).use { pfd ->
+-                bindOk = bindSocketFdToPreferredNetwork(pfd.fileDescriptor)
+-                AppState.appendLog("[VPN-UNDER ] Native peer socket bind=${if (bindOk) "ok" else "failed"}")
+-            }
+-        } catch (e: Exception) {
+-            AppState.appendLog("[VPN-UNDER ] Native peer socket bind error: ${e.message}")
+-        }
+-
+-        return protectedOk && bindOk
++            AppState.appendLog("[VPN-UNDER ] Native socket preparation failed: ${e.message}")
++            false
++        }
+     }
+ 
+     private fun isUsableUnderlay(cm: ConnectivityManager, network: Network): Boolean {
+@@ -642,152 +629,126 @@
+         }
+     }
+ 
++    private fun matchesLockedGameplayNetwork(cm: ConnectivityManager, network: Network): Boolean {
++        val path = lockedLanPath ?: return false
++        if (network in lostGameplayNetworks || !isUsableUnderlay(cm, network)) return false
++        val caps = cm.getNetworkCapabilities(network) ?: return false
++        if (!caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) return false
++        val lp = gameplayLinkProperties[network] ?: cm.getLinkProperties(network) ?: return false
++        return GameplayPathPolicy.matchesLockedPath(
++            path.localIp, path.interfaceName, lp.interfaceName,
++            lp.linkAddresses.mapNotNull { it.address.hostAddress },
++        )
++    }
++
+     private fun resolveExactGameplayNetwork(cm: ConnectivityManager, transportMode: String): Network? {
+         if (transportMode != "wifi_udp") return null
+-
+-        // Pairing/startup already resolved the exact LAN path. Prefer that
+-        // Network object for ordinary Wi-Fi station/client mode.
+-        AppState.localLanNetwork.get()?.let { locked ->
+-            if (isUsableUnderlay(cm, locked)) {
+-                val caps = cm.getNetworkCapabilities(locked)
+-                if (caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true) return locked
+-            }
+-        }
+-
+-        val localIp = AppState.localIp.get()
+-        if (localIp.isNullOrBlank() || localIp == "127.0.0.1") return null
+-        val matches = cm.allNetworks.filter { network ->
+-            if (!isUsableUnderlay(cm, network)) return@filter false
+-            val caps = cm.getNetworkCapabilities(network) ?: return@filter false
+-            if (!caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) return@filter false
+-            val lp = cm.getLinkProperties(network) ?: return@filter false
+-            lp.linkAddresses.any { it.address is Inet4Address && it.address.hostAddress == localIp }
+-        }
+-        if (matches.size == 1) return matches.first()
+-        val active = cm.activeNetwork
+-        return active?.takeIf { matches.contains(it) }
++        val path = lockedLanPath ?: return null
++        if (!LanPathResolver.isStillAvailable(path)) return null
++        // Keep the existing bind while its actual IPv4 address/interface exist.
++        // An old Network object remaining queryable is insufficient.
++        boundGameplayNetwork?.let { if (matchesLockedGameplayNetwork(cm, it)) return it }
++        path.androidNetwork?.let { if (matchesLockedGameplayNetwork(cm, it)) return it }
++        val matches = (cm.allNetworks.toList() + gameplayLinkProperties.keys).distinct()
++            .filter { matchesLockedGameplayNetwork(cm, it) }
++        return matches.singleOrNull() ?: cm.activeNetwork?.takeIf { it in matches }
++    }
++
++    private fun isKernelGameplayPathAvailable(): Boolean {
++        val path = lockedLanPath ?: return false
++        // A station that lost its Network cannot become a SoftAP owner merely
++        // because its old interface index is still saved.
++        return path.isHotspotOwnerStyle && LanPathResolver.isStillAvailable(path)
+     }
+ 
+     private fun bindSocketFdToPreferredNetwork(fileDescriptor: FileDescriptor): Boolean {
+         val cm = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
+-        val transportMode = canonicalTransportMode()
+-        val exactNetwork = resolveExactGameplayNetwork(cm, transportMode)
++        val exactNetwork = resolveExactGameplayNetwork(cm, canonicalTransportMode())
+         if (exactNetwork == null) {
+-            // Android commonly does not publish the hotspot owner's SoftAP as a
+-            // ConnectivityManager Network. Native has already source-bound and
+-            // interface-pinned the peer socket using the locked LanPath, so this
+-            // is a valid path rather than a bind failure.
+-            val ifIndex = AppState.localLanInterfaceIndex.get()
+-            val iface = AppState.localLanInterfaceName.get()
+-            val localIp = AppState.localIp.get()
+-            if (transportMode == "wifi_udp" && ifIndex > 0 && !localIp.isNullOrBlank()) {
+-                AppState.appendLog(
+-                    "[VPN-UNDER ] No Android Network for $iface#$ifIndex/$localIp — using native kernel/SoftAP pin"
+-                )
++            if (isKernelGameplayPathAvailable()) {
++                preparedGameplayNetwork = null
++                AppState.appendLog("[VPN-UNDER ] Protected native socket uses the live source-bound hotspot path")
+                 return true
+             }
+-            AppState.appendLog("[VPN-UNDER ] No exact gameplay network or locked kernel LAN path available")
++            AppState.appendLog("[VPN-UNDER ] Exact Wi-Fi source path unavailable")
+             return false
+         }
+         return try {
+             exactNetwork.bindSocket(fileDescriptor)
+-            AppState.appendLog("[VPN-UNDER ] Native peer socket bound to exact ${describeNetwork(cm, exactNetwork)}")
++            preparedGameplayNetwork = exactNetwork
++            AppState.appendLog("[VPN-UNDER ] Native socket bound to ${describeNetwork(cm, exactNetwork)}")
+             true
+         } catch (e: Exception) {
+-            AppState.appendLog("[VPN-UNDER ] Exact gameplay bind failed on ${describeNetwork(cm, exactNetwork)}: ${e.message}")
++            AppState.appendLog("[VPN-UNDER ] Exact gameplay bind failed: ${e.message}")
+             false
+         }
+     }
+ 
+-
+-    private fun gameplayNetworkIdentity(cm: ConnectivityManager, network: Network?): String? {
+-        if (network == null) return null
+-        val lp = runCatching { cm.getLinkProperties(network) }.getOrNull()
+-        val iface = lp?.interfaceName ?: "?"
+-        val addrs = lp?.linkAddresses?.joinToString(",") { it.address.hostAddress ?: "?" } ?: ""
+-        return "${network}|$iface|$addrs"
+-    }
+-
+-    /**
+-     * nativeStart() already protected, bound and connected the peer socket, and
+-     * verifyPeerPath() just proved it in both directions. Remember that exact
+-     * path without immediately disconnecting/reconnecting it a second time.
+-     */
++    private fun gameplayNetworkIdentity(network: Network?): String? {
++        val path = lockedLanPath ?: return null
++        return network?.let {
++            GameplayPathPolicy.identity(it.toString(), path.interfaceName, path.localIp)
++        }
++    }
++
++    /** Remember the socket that the successful bidirectional probe actually used. */
+     private fun rememberVerifiedGameplayPath() {
+         synchronized(gameplayRefreshLock) {
+-            val cm = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
+-            val network = resolveExactGameplayNetwork(cm, canonicalTransportMode())
++            boundGameplayNetwork = preparedGameplayNetwork
++            gameplayPathPolicy.rememberBound(gameplayNetworkIdentity(boundGameplayNetwork))
+             updateUnderlyingNetworks()
+-            lastGameplayNetworkIdentity = gameplayNetworkIdentity(cm, network)
+-            lastRebindMs = System.currentTimeMillis()
+-            AppState.appendFileOnly(
+-                if (network != null) {
+-                    "[VPN-UNDER ] Verified startup path retained: ${describeNetwork(cm, network)}"
+-                } else {
+-                    "[VPN-UNDER ] Verified startup kernel/SoftAP path retained without redundant rebind"
+-                }
+-            )
++            AppState.appendFileOnly("[VPN-UNDER ] Verified startup path retained without redundant rebind")
+         }
+     }
+ 
+     private fun startGameplayPathMonitor() {
+         stopGameplayPathMonitor()
+-        if (canonicalTransportMode() != "wifi_udp") {
+-            AppState.appendFileOnly("[VPN-UNDER ] Wi-Fi path monitor skipped for non-Wi-Fi transport")
+-            return
+-        }
++        if (canonicalTransportMode() != "wifi_udp") return
++        // Reset an old monitor first; never erase the just-verified identity.
++        rememberVerifiedGameplayPath()
+         gameplayMonitorExecutor = Executors.newSingleThreadScheduledExecutor { runnable ->
+             Thread(runnable, "PeerLink-GameplayPath").apply { isDaemon = true }
+         }.also { executor ->
+-            executor.scheduleAtFixedRate(
+-                {
+-                    runCatching {
+-                        if (AppState.isRunning.get() && System.currentTimeMillis() >= gameplayRefreshAllowedAtMs) {
+-                            refreshGameplayPath("monitor", force = false)
+-                        }
+-                    }
+-                },
+-                10L,
+-                10L,
+-                TimeUnit.SECONDS,
++            executor.scheduleWithFixedDelay(
++                { runCatching { refreshGameplayPath("monitor") } },
++                10L, 10L, TimeUnit.SECONDS,
+             )
+         }
+-        // Register a NetworkCallback so we react to Wi-Fi loss immediately
+-        // instead of waiting for the low-frequency safety poll. This is the
+-        // difference between "tunnel survives a brief AP flap" and "eFootball
+-        // kicks both players because the socket went silent for 800 ms".
+         registerGameplayNetworkCallback()
+     }
+ 
+     private fun stopGameplayPathMonitor() {
++        unregisterGameplayNetworkCallback()
+         val executor = gameplayMonitorExecutor
+         gameplayMonitorExecutor = null
+         executor?.shutdownNow()
+         if (executor != null && Thread.currentThread().name != "PeerLink-GameplayPath") {
+             runCatching { executor.awaitTermination(2L, TimeUnit.SECONDS) }
+         }
+-        lastGameplayNetworkIdentity = null
+-        unregisterGameplayNetworkCallback()
+-    }
+-
+-    /**
+-     * Register a NetworkCallback for any Wi-Fi transport network. We deliberately
+-     * only react to onLost for the SPECIFIC network we're actually bound to —
+-     * reacting to every Wi-Fi network's comings and goings (or to capability
+-     * changes, which fire constantly due to RSSI/signal-strength fluctuations)
+-     * caused a rebind storm that was tearing down the peer socket every few
+-     * seconds. That was the root cause of the worsening disconnects after the
+-     * previous patch.
+-     *
+-     * Strategy:
+-     *  - onAvailable: normally do nothing. If onLost marked the gameplay path
+-     *    unavailable, schedule one immediate cooldown-protected recovery.
+-     *    This avoids both the old rebind storm and a 10-second recovery delay.
+-     *  - onLost: ONLY act if the lost network is the one we're currently bound
+-     *    to. Otherwise it's some other Wi-Fi in range going away — irrelevant.
+-     *  - onCapabilitiesChanged: do nothing. The polling loop handles gradual
+-     *    capability drift. Reacting here causes a rebind storm.
+-     */
++        synchronized(gameplayRefreshLock) {
++            gameplayRetry?.cancel(false)
++            gameplayRetry = null
++            gameplayPathPolicy.markLost()
++            boundGameplayNetwork = null
++            gameplayLinkProperties.clear()
++            lostGameplayNetworks.clear()
++        }
++    }
++
++    private fun postGameplayNetworkEvent(action: () -> Unit) {
++        val executor = gameplayMonitorExecutor ?: return
++        // A callback can already be queued when Android unregisters it. A
++        // shutdown race must neither crash the callback thread nor rebind.
++        runCatching {
++            executor.execute {
++                if (gameplayMonitorExecutor !== executor || stopVpnGuard.get() || !AppState.isRunning.get()) return@execute
++                runCatching { action() }.onFailure {
++                    AppState.appendLog("[VPN-UNDER ] Path callback failed: ${it.message}")
++                }
++            }
++        }
++    }
++
+     private fun registerGameplayNetworkCallback() {
+         if (gameplayNetworkCallback != null) return
+         try {
+@@ -797,114 +758,104 @@
+                 .build()
+             val cb = object : ConnectivityManager.NetworkCallback() {
+                 override fun onAvailable(network: Network) {
+-                    if (!AppState.isRunning.get() || lastGameplayNetworkIdentity != null) return
+-                    gameplayMonitorExecutor?.execute {
+-                        runCatching { refreshGameplayPath("wifi-recovered", force = false) }
++                    // API 26+ follows this with capabilities and LinkProperties.
++                    // Do not query incomplete state or reconnect here.
++                    postGameplayNetworkEvent {
++                        lostGameplayNetworks.remove(network)
++                        gameplayLinkProperties.remove(network)
+                     }
+                 }
+-                override fun onLost(network: Network) {
+-                    if (!AppState.isRunning.get()) return
+-                    // Only react if the lost network is the one we're actually
+-                    // using for the gameplay tunnel. If it's some other Wi-Fi
+-                    // in range going away, ignore it — clearing the underlay
+-                    // for an unrelated network loss was causing real disconnects.
+-                    val cmNow = getSystemService(CONNECTIVITY_SERVICE) as? ConnectivityManager
+-                    val transportMode = canonicalTransportMode()
+-                    val currentGameplayNetwork = cmNow?.let { resolveExactGameplayNetwork(it, transportMode) }
+-                    // If our current gameplay network can't be resolved anymore,
+-                    // OR the lost network IS the current one, react.
+-                    // Note: by the time onLost fires, the network is already
+-                    // gone from cm.allNetworks, so resolveExactGameplayNetwork
+-                    // will return null if it WAS our network. We can't directly
+-                    // compare Network objects here because the lost one is no
+-                    // longer queryable. Instead, just check if we still have a
+-                    // valid gameplay network — if not, react.
+-                    if (currentGameplayNetwork == null) {
+-                        val kernelPinned = transportMode == "wifi_udp" &&
+-                            AppState.localLanNetwork.get() == null &&
+-                            AppState.localLanInterfaceIndex.get() > 0
+-                        if (kernelPinned) {
+-                            AppState.appendFileOnly("[VPN-UNDER ] Wi-Fi Network object lost/absent, but hotspot-owner kernel path remains pinned — ignoring")
+-                            return
+-                        }
+-                        AppState.appendLog("[VPN-UNDER ] Gameplay Wi-Fi network lost — waiting for exact path recovery")
+-                        lastGameplayNetworkIdentity = null
+-                        runCatching { setUnderlyingNetworks(null) }
+-                    } else {
+-                        // Some other Wi-Fi network went away — we don't care.
+-                        AppState.appendFileOnly("[VPN-UNDER ] Unrelated Wi-Fi network lost — ignoring (current gameplay network still up)")
++
++                override fun onLinkPropertiesChanged(network: Network, linkProperties: LinkProperties) {
++                    val snapshot = LinkProperties(linkProperties)
++                    postGameplayNetworkEvent {
++                        gameplayLinkProperties[network] = snapshot
++                        lostGameplayNetworks.remove(network)
++                        refreshGameplayPath("wifi-address-ready")
+                     }
+                 }
++
++                override fun onLost(network: Network) {
++                    postGameplayNetworkEvent {
++                        synchronized(gameplayRefreshLock) {
++                            gameplayLinkProperties.remove(network)
++                            lostGameplayNetworks.add(network)
++                            if (network == boundGameplayNetwork) {
++                                boundGameplayNetwork = null
++                                gameplayPathPolicy.markLost()
++                                AppState.appendLog("[VPN-UNDER ] Gameplay Wi-Fi lost; waiting for the exact source path")
++                                updateUnderlyingNetworks()
++                            }
++                        }
++                        refreshGameplayPath("wifi-lost")
++                    }
++                }
++
+                 override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
+-                    // Deliberately not acting here — see method comment.
+-                    // Capabilities change every second due to signal strength
+-                    // fluctuations; reacting here caused a rebind storm.
++                    // RSSI/validation changes do not alter the IPv4 socket bind.
+                 }
+             }
+             cm.registerNetworkCallback(request, cb)
+             gameplayNetworkCallback = cb
+-            AppState.appendLog("[VPN-UNDER ] Wi-Fi NetworkCallback registered (loss-only, gameplay-network-gated)")
+         } catch (e: Exception) {
+-            AppState.appendLog("[VPN-UNDER ] NetworkCallback register failed: ${e.message}")
++            AppState.appendLog("[VPN-UNDER ] Network callback registration failed: ${e.message}")
+         }
+     }
+ 
+     private fun unregisterGameplayNetworkCallback() {
+         val cb = gameplayNetworkCallback ?: return
+-        try {
+-            val cm = getSystemService(CONNECTIVITY_SERVICE) as? ConnectivityManager
+-            cm?.unregisterNetworkCallback(cb)
+-        } catch (_: Exception) { }
+         gameplayNetworkCallback = null
+-    }
+-
+-    private fun refreshGameplayPath(reason: String, force: Boolean): Boolean {
++        runCatching {
++            (getSystemService(CONNECTIVITY_SERVICE) as? ConnectivityManager)?.unregisterNetworkCallback(cb)
++        }
++    }
++
++    private fun scheduleGameplayRetry(delayMs: Long) {
++        if (gameplayRetry?.isDone == false) return
++        val executor = gameplayMonitorExecutor ?: return
++        gameplayRetry = runCatching {
++            executor.schedule({
++                synchronized(gameplayRefreshLock) { gameplayRetry = null }
++                runCatching { refreshGameplayPath("retry") }
++            }, delayMs.coerceAtLeast(1L), TimeUnit.MILLISECONDS)
++        }.getOrNull()
++    }
++
++    private fun refreshGameplayPath(reason: String): Boolean {
+         synchronized(gameplayRefreshLock) {
++            if (stopVpnGuard.get() || !AppState.isRunning.get()) return false
+             val backend = nativeBackend ?: return false
+             val cm = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
+-            val transportMode = canonicalTransportMode()
+-            val network = resolveExactGameplayNetwork(cm, transportMode)
++            val network = resolveExactGameplayNetwork(cm, canonicalTransportMode())
+             if (network == null) {
+-                val kernelPinned = transportMode == "wifi_udp" &&
+-                    AppState.localLanInterfaceIndex.get() > 0 &&
+-                    !AppState.localIp.get().isNullOrBlank()
++                if (isKernelGameplayPathAvailable()) return true
++                gameplayPathPolicy.markLost()
+                 updateUnderlyingNetworks()
+-                if (kernelPinned) {
+-                    AppState.appendFileOnly(
+-                        "[VPN-UNDER ] Gameplay path healthy ($reason): native kernel/SoftAP pin " +
+-                            "${AppState.localLanInterfaceName.get()}#${AppState.localLanInterfaceIndex.get()} " +
+-                            "${AppState.localIp.get()}"
+-                    )
+-                    return true
+-                }
+-                AppState.appendFileOnly("[VPN-UNDER ] Gameplay path refresh deferred ($reason): no exact network for mode=$transportMode")
++                AppState.appendFileOnly("[VPN-UNDER ] Path unavailable ($reason): waiting for the locked IPv4/interface; a changed LAN address needs a new pairing")
+                 return false
+             }
+-            val identity = gameplayNetworkIdentity(cm, network)
+-            val changed = identity != lastGameplayNetworkIdentity
+-            if (!force && !changed) return true
+-            // Enforce the rebind cooldown even when force=true. The only caller
+-            // that bypasses this is startVpn() (which sets gameplayRefreshAllowedAtMs
+-            // to 5s in the future, gating all refreshes until then). All other
+-            // callers — including the NetworkCallback's onLost — respect the
+-            // cooldown so we don't tear down the peer socket more than once
+-            // every REBIND_COOLDOWN_MS.
+-            val now = System.currentTimeMillis()
+-            if (now - lastRebindMs < REBIND_COOLDOWN_MS && reason != "startup") {
+-                AppState.appendFileOnly("[VPN-UNDER ] Rebind skipped ($reason): cooldown active (${now - lastRebindMs}ms < ${REBIND_COOLDOWN_MS}ms)")
++            val identity = gameplayNetworkIdentity(network) ?: return false
++            if (!gameplayPathPolicy.needsRebind(identity)) return true
++            val delay = gameplayPathPolicy.retryDelayMs(identity, SystemClock.elapsedRealtime())
++            if (delay > 0L) {
++                scheduleGameplayRetry(delay)
+                 return false
+             }
+-            updateUnderlyingNetworks()
+-            val rebound = runCatching { backend.rebindPeerSocket() }.getOrElse {
+-                AppState.appendLog("[VPN-UNDER ] Gameplay path rebind error ($reason): ${it.message}")
+-                false
+-            }
++            val rebound = runCatching { backend.rebindPeerSocket() }.getOrDefault(false)
++            // The callback may observe a newer snapshot; record the network it
++            // actually bound, rather than the network seen before the JNI call.
++            val actualNetwork = preparedGameplayNetwork
++            gameplayPathPolicy.recordAttempt(identity, SystemClock.elapsedRealtime(), rebound)
+             if (rebound) {
+-                lastGameplayNetworkIdentity = identity
+-                lastRebindMs = System.currentTimeMillis()
+-                AppState.appendLog("[VPN-UNDER ] Gameplay path rebound ($reason): ${describeNetwork(cm, network)}")
++                boundGameplayNetwork = actualNetwork
++                gameplayPathPolicy.rememberBound(gameplayNetworkIdentity(actualNetwork))
++                gameplayRetry?.cancel(false)
++                gameplayRetry = null
++                updateUnderlyingNetworks()
++                AppState.appendLog("[VPN-UNDER ] Gameplay socket rebound ($reason)")
+             } else {
+-                AppState.appendLog("[VPN-UNDER ] Gameplay path rebind failed ($reason) on ${describeNetwork(cm, network)}")
++                scheduleGameplayRetry(REBIND_COOLDOWN_MS)
++                AppState.appendLog("[VPN-UNDER ] Gameplay socket rebind failed ($reason); retry scheduled")
+             }
+             return rebound
+         }
+@@ -1068,9 +1019,7 @@
+             exactGameplay?.let { ordered.add(it) }
+ 
+             val kernelPinnedHotspotPath = transportMode == "wifi_udp" &&
+-                exactGameplay == null &&
+-                AppState.localLanNetwork.get() == null &&
+-                AppState.localLanInterfaceIndex.get() > 0
++                exactGameplay == null && isKernelGameplayPathAvailable()
+             if (kernelPinnedHotspotPath) {
+                 // SoftAP owner: the peer UDP socket is independently pinned in
+                 // native. Keep the VPN's ordinary Internet passthrough on the
+--- a/app/src/main/java/com/peerlink/app/tunnel/NativeBackendModels.kt
++++ b/app/src/main/java/com/peerlink/app/tunnel/NativeBackendModels.kt
+@@ -10,6 +10,8 @@
+     val localLanIp: String,
+     /** Kernel interface index for the same LAN path (SoftAP or wlan). */
+     val localInterfaceIndex: Int,
++    /** Our advertised listener; the peer may advertise a different destination port. */
++    val localPort: Int = 17024,
+     val vpnAddress: String = "10.0.0.2",
+     val vpnAddressIpv6: String = "fd00::2",
+     val mtu: Int = 1400,
+@@ -30,6 +32,7 @@
+     val droppedPackets: Long,
+     val keepaliveTx: Long,
+     val keepaliveRx: Long,
++    val backendRunning: Boolean = false,
+ ) {
+     val totalTunneledPackets: Long get() = tunnelOutPackets + tunnelInPackets
+ 
+@@ -37,7 +40,7 @@
+         val EMPTY = NativeBackendStats(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+ 
+         fun fromRaw(raw: LongArray?): NativeBackendStats {
+-            if (raw == null || raw.size < 11) return EMPTY
++            if (raw == null || raw.size < 12) return EMPTY
+             return NativeBackendStats(
+                 tunnelOutPackets = raw[0],
+                 tunnelOutBytes = raw[1],
+@@ -50,6 +53,7 @@
+                 droppedPackets = raw[8],
+                 keepaliveTx = raw[9],
+                 keepaliveRx = raw[10],
++                backendRunning = raw[11] != 0L,
+             )
+         }
+     }
+--- a/app/src/main/java/com/peerlink/app/tunnel/NativePeerLinkBackend.kt
++++ b/app/src/main/java/com/peerlink/app/tunnel/NativePeerLinkBackend.kt
+@@ -69,6 +69,7 @@
+             tunFd = tunFd,
+             peerLanIp = config.peerLanIp,
+             peerPort = config.peerPort,
++            localPort = config.localPort,
+             myFabricatedIp = config.myFabricatedIp,
+             peerFabricatedIp = config.peerFabricatedIp,
+             vpnAddress = config.vpnAddress,
+@@ -257,7 +258,7 @@
+ 
+     fun rebindPeerSocket(): Boolean = handleLock.read {
+         val handle = nativeHandle
+-        if (handle == 0L) return@read false
++        if (handle == 0L || stopping) return@read false
+         return@read nativeRebindPeerSocket(handle)
+     }
+ 
+@@ -325,6 +326,7 @@
+         tunFd: Int,
+         peerLanIp: String,
+         peerPort: Int,
++        localPort: Int,
+         myFabricatedIp: String,
+         peerFabricatedIp: String,
+         vpnAddress: String,
+--- a/app/src/main/java/com/peerlink/app/tunnel/TunnelEngine.kt
++++ b/app/src/main/java/com/peerlink/app/tunnel/TunnelEngine.kt
+@@ -20,7 +20,9 @@
+ import java.net.InetSocketAddress
+ import java.net.Socket
+ import java.net.SocketTimeoutException
++import java.net.PortUnreachableException
+ import java.nio.ByteBuffer
++import com.peerlink.app.network.UdpProxySockets
+ import java.nio.channels.DatagramChannel
+ import java.nio.channels.SelectionKey
+ import java.nio.channels.Selector
+@@ -2452,29 +2454,34 @@
+             System.arraycopy(buffer, payloadStart, payload, 0, payloadLen)
+             
+             val inet6Addr = Inet6Address.getByAddress(destAddr)
+-            val key = "${formatIpv6Address(srcAddr, 0)}:$srcPort"
++            val key = "${formatIpv6Address(srcAddr, 0)}:$srcPort->${formatIpv6Address(destAddr, 0)}:$destPort"
+             
+             var channel: DatagramChannel?
+             synchronized(ipv6ChannelCacheLock) { channel = ipv6ChannelCache[key] }
+             
+             if (channel == null || !channel!!.isOpen) {
+-                channel = DatagramChannel.open(java.net.StandardProtocolFamily.INET6)
+-                channel!!.configureBlocking(false)
+-                if (!protectDatagramSocket(channel!!.socket())) {
+-                    channel!!.close(); AppState.passedThrough.incrementAndGet(); return
+-                }
+-                bindPassthroughDatagramSocket(channel!!.socket())
+-                channel!!.socket().bind(InetSocketAddress(srcPort))
+-                synchronized(ipv6ChannelCacheLock) { ipv6ChannelCache[key] = channel!! }
+-                val selector = ipv6UdpSelector
+-                if (selector != null) {
+-                    selector.wakeup()
+-                    channel!!.register(selector, SelectionKey.OP_READ, Ipv6FlowRef(srcAddr, destAddr, srcPort, destPort))
+-                }
+-            }
+-            
+-            val packet = ByteBuffer.wrap(payload)
+-            channel?.send(packet, InetSocketAddress(inet6Addr, destPort))
++                val opened = UdpProxySockets.openConnected(InetSocketAddress(inet6Addr, destPort)) { socket ->
++                    if (!protectDatagramSocket(socket)) false else {
++                        bindPassthroughDatagramSocket(socket)
++                        true
++                    }
++                }
++                try {
++                    val selector = ipv6UdpSelector ?: throw IllegalStateException("IPv6 selector stopped")
++                    synchronized(ipv6ChannelCacheLock) {
++                        check(isRunning.get()) { "UDP bridge stopped" }
++                        selector.wakeup()
++                        opened.register(selector, SelectionKey.OP_READ, Ipv6FlowRef(srcAddr, destAddr, srcPort, destPort))
++                        ipv6ChannelCache[key] = opened
++                    }
++                    channel = opened
++                } catch (e: Exception) {
++                    opened.closeQuietly()
++                    throw e
++                }
++            }
++
++            channel?.write(ByteBuffer.wrap(payload))
+             AppState.passedThrough.incrementAndGet()
+             
+         } catch (e: Exception) {
+@@ -2505,7 +2512,9 @@
+                     if (ref == null) { key.cancel(); continue }
+                     
+                     readBuffer.clear()
+-                    val len = try { channel.read(readBuffer) } catch (e: Exception) { key.cancel(); continue }
++                    val len = try { channel.read(readBuffer) }
++                        catch (_: PortUnreachableException) { continue } // transient ICMP; preserve the local UDP port
++                        catch (e: Exception) { key.cancel(); channel.closeQuietly(); continue }
+                     
+                     if (len > 0) {
+                         readBuffer.flip()
+@@ -2789,45 +2798,46 @@
+         Thread.currentThread().name = "PeerLink-UDP-Out"
+         val selector = udpSelector ?: return
+         while (isRunning.get()) {
++            val qp = deviceToNetworkUdpQueue.pollWait(2) ?: continue
+             try {
+                 JitterDiag.heartbeatUdpOut.set(System.nanoTime())
+-                val qp = deviceToNetworkUdpQueue.pollWait(2)
+-                if (qp == null) continue
+-
+                 val destIp = qp.destIp
+                 val destPort = qp.destPort
+                 val srcPort = qp.sourcePort
+-                val key = "$destIp:$destPort:$srcPort"
+-                
+-                var channel: DatagramChannel?
+-                synchronized(udpChannelCacheLock) { channel = udpChannelCache[key] }
+-
+-                if (channel == null || !channel!!.isOpen) {
+-                    channel = DatagramChannel.open()
+-                    channel!!.configureBlocking(false)
+-                    if (!protectDatagramSocket(channel!!.socket())) {
+-                        channel!!.close()
+-                        udpTcpPacketPool.release(qp)
+-                        continue
++                val key = "${qp.sourceIp}:$srcPort->$destIp:$destPort"
++                var channel = synchronized(udpChannelCacheLock) { udpChannelCache[key] }
++                if (channel == null || !channel.isOpen) {
++                    val opened = UdpProxySockets.openConnected(InetSocketAddress(InetAddress.getByName(destIp), destPort)) { socket ->
++                        if (!protectDatagramSocket(socket)) false else {
++                            bindPassthroughDatagramSocket(socket)
++                            true
++                        }
+                     }
+-                    bindPassthroughDatagramSocket(channel!!.socket())
+-                    channel!!.connect(InetSocketAddress(InetAddress.getByName(destIp), destPort))
+-                    val ref = UdpFlowRef(qp.destIpBytes.copyOf(), qp.sourceIpBytes.copyOf(), destPort, srcPort)
+-                    selector.wakeup()
+-                    channel!!.register(selector, SelectionKey.OP_READ, ref)
+-                    synchronized(udpChannelCacheLock) { udpChannelCache[key] = channel!! }
+-                }
+-
++                    try {
++                        val ref = UdpFlowRef(qp.destIpBytes.copyOf(), qp.sourceIpBytes.copyOf(), destPort, srcPort)
++                        synchronized(udpChannelCacheLock) {
++                            check(isRunning.get()) { "UDP bridge stopped" }
++                            selector.wakeup()
++                            opened.register(selector, SelectionKey.OP_READ, ref)
++                            udpChannelCache[key] = opened
++                        }
++                        channel = opened
++                    } catch (e: Exception) {
++                        opened.closeQuietly()
++                        throw e
++                    }
++                }
+                 val payloadOffset = qp.headerLength + 8
+                 val payloadLength = qp.totalLength - payloadOffset
+                 if (payloadLength > 0 && payloadOffset + payloadLength <= qp.length) {
+-                    val payloadBuffer = ByteBuffer.wrap(qp.data, payloadOffset, payloadLength)
+-                    channel?.write(payloadBuffer)
+-                }
+-                
++                    channel?.write(ByteBuffer.wrap(qp.data, payloadOffset, payloadLength))
++                }
++            } catch (e: Exception) {
++                if (isRunning.get()) debugLog("UDP-OUT", "Error: ${e.message}")
++            } finally {
++                // A send, bind, or registration failure must not leak the
++                // pooled packet and create growing allocation/GC pressure.
+                 udpTcpPacketPool.release(qp)
+-            } catch (e: Exception) {
+-                if (isRunning.get()) debugLog("âŒ UDP-OUT", "Error: ${e.message}")
+             }
+         }
+     }
+@@ -2855,7 +2865,9 @@
+                     if (ref == null) { key.cancel(); continue }
+                     
+                     readBuffer.clear()
+-                    val len = try { channel.read(readBuffer) } catch (e: Exception) { key.cancel(); continue }
++                    val len = try { channel.read(readBuffer) }
++                        catch (_: PortUnreachableException) { continue } // transient ICMP; preserve the local UDP port
++                        catch (e: Exception) { key.cancel(); channel.closeQuietly(); continue }
+                     
+                     if (len > 0) {
+                         readBuffer.flip()
+@@ -2905,14 +2917,14 @@
+     private fun tcpOutputLoop() {
+         Thread.currentThread().name = "PeerLink-TCP-Out"
+         while (isRunning.get()) {
++            val qp = deviceToNetworkTcpQueue.pollWait(2) ?: continue
+             try {
+                 JitterDiag.heartbeatTcpOut.set(System.nanoTime())
+-                val qp = deviceToNetworkTcpQueue.pollWait(2)
+-                if (qp == null) continue
+                 processTcpOutputPacket(qp)
+-                udpTcpPacketPool.release(qp)
+             } catch (e: Exception) {
+                 if (isRunning.get()) debugLog("âŒ TCP-OUT", "Error: ${e.message}")
++            } finally {
++                udpTcpPacketPool.release(qp)
+             }
+         }
+     }
+--- a/app/src/main/jni/peerlink_backend.cpp
++++ b/app/src/main/jni/peerlink_backend.cpp
+@@ -2225,30 +2225,28 @@
+ bool write_frame_bounded(int fd, const uint8_t *data, size_t length, int *error_out = nullptr) {
+     constexpr int kWritePollTimeoutMs = 1;
+     constexpr int kWriteRetries = 2;
+-    size_t written = 0;
+     int attempts = 0;
+-    while (written < length) {
+-        const ssize_t rc = write(fd, data + written, length - written);
++    while (true) {
++        const ssize_t rc = write(fd, data, length);
+         if (rc < 0) {
+             const int write_errno = errno;
+             if (write_errno == EINTR) continue;
+-            if ((write_errno == EAGAIN || write_errno == EWOULDBLOCK) && attempts < kWriteRetries && wait_writable(fd, kWritePollTimeoutMs)) {
+-                ++attempts;
+-                continue;
+-            }
++            if ((write_errno == EAGAIN || write_errno == EWOULDBLOCK) &&
++                attempts++ < kWriteRetries && wait_writable(fd, kWritePollTimeoutMs)) continue;
+             if (error_out != nullptr) *error_out = write_errno;
+             errno = write_errno;
+             return false;
+         }
+-        if (rc == 0) {
+-            if (error_out != nullptr) *error_out = EAGAIN;
+-            errno = EAGAIN;
++        if (static_cast<size_t>(rc) != length) {
++            // TUN writes are packet-oriented. A second write would be a second,
++            // invalid packet, rather than completing the original frame.
++            if (error_out != nullptr) *error_out = EMSGSIZE;
++            errno = EMSGSIZE;
+             return false;
+         }
+-        written += static_cast<size_t>(rc);
+-    }
+-    if (error_out != nullptr) *error_out = 0;
+-    return true;
++        if (error_out != nullptr) *error_out = 0;
++        return true;
++    }
+ }
+ 
+ bool send_message(int fd,
+@@ -2266,11 +2264,11 @@
+             rc = sendto(fd,
+                         data,
+                         length,
+-                        0,
++                        MSG_DONTWAIT | MSG_NOSIGNAL,
+                         reinterpret_cast<const sockaddr *>(target),
+                         sizeof(*target));
+         } else {
+-            rc = send(fd, data, length, 0);
++            rc = send(fd, data, length, MSG_DONTWAIT | MSG_NOSIGNAL);
+         }
+         if (rc < 0) {
+             const int send_errno = errno;
+@@ -2293,6 +2291,30 @@
+         errno = EMSGSIZE;
+         return false;
+     }
++}
++
++bool prepare_peer_socket_callback(JNIEnv *env, BackendState *state) {
++    const int callback_fd = dup(state->peer_fd);
++    if (callback_fd < 0) return false;
++    const jboolean prepared = env->CallBooleanMethod(
++            state->callbacks, state->prepare_peer_socket_mid, static_cast<jint>(callback_fd));
++    const bool exception = env->ExceptionCheck();
++    if (exception) env->ExceptionClear();
++    close(callback_fd); // Kotlin borrows it via fromFd(), including on exceptions.
++    return !exception && prepared == JNI_TRUE;
++}
++
++bool bind_peer_source(BackendState *state, int local_port) {
++    if (!state->has_configured_local_lan_ip || local_port < 1 || local_port > 65535) {
++        errno = EINVAL;
++        return false;
++    }
++    sockaddr_in source{};
++    source.sin_family = AF_INET;
++    source.sin_port = htons(static_cast<uint16_t>(local_port));
++    std::memcpy(&source.sin_addr, state->configured_local_lan_ip.data(), 4);
++    // A vanished source address cannot silently become a wildcard/cellular bind.
++    return bind(state->peer_fd, reinterpret_cast<const sockaddr *>(&source), sizeof(source)) == 0;
+ }
+ 
+ bool disconnect_udp_socket(int fd) {
+@@ -2433,9 +2455,9 @@
+ }
+ 
+ void drain_peer_tx_timestamps(BackendState *state) {
+-    if (state == nullptr) return;
++    if (state == nullptr || state->peer_fd < 0) return;
+     uint8_t data[2048];
+-    char control[512];
++    alignas(cmsghdr) char control[512];
+     sockaddr_in addr{};
+     for (int budget = 0; budget < 64; ++budget) {
+         iovec iov{};
+@@ -2455,7 +2477,7 @@
+             if (errno == EINTR) continue;
+             break;
+         }
+-        if (rc == 0) break;
++        // OPT_TSONLY deliberately returns a zero-byte payload plus control messages.
+ 
+         uint32_t tx_kind = 0;
+         uint32_t tx_id = 0xFFFFFFFFu;
+@@ -2485,11 +2507,17 @@
+             update_tx_trace_slot(state, tx_id, tx_kind, tx_rt_ns);
+         }
+     }
++    // POLLERR also reports sk_err when IP_RECVERR is unavailable. An empty
++    // MSG_ERRQUEUE alone does not clear it, causing the RX poller to spin.
++    int socket_error = 0;
++    socklen_t error_length = sizeof(socket_error);
++    (void) getsockopt(state->peer_fd, SOL_SOCKET, SO_ERROR, &socket_error, &error_length);
+ }
+ 
+ bool send_peer_control_byte(BackendState *state, uint8_t value) {
+     int send_error = 0;
+     std::lock_guard<std::mutex> send_lock(state->peer_send_mutex);
++    if (!state->running.load(std::memory_order_acquire)) return false;
+     if (!send_message(state->peer_fd, &value, 1, nullptr, SendPolicy::kImmediateDrop, &send_error)) {
+         return false;
+     }
+@@ -2764,7 +2792,7 @@
+     if (kernel_to_user_us_out != nullptr) *kernel_to_user_us_out = 0xFFFFFFFFu;
+     if (kernel_rx_rt_ns_out != nullptr) *kernel_rx_rt_ns_out = 0;
+ 
+-    char control[CMSG_SPACE(sizeof(timespec))];
++    alignas(cmsghdr) char control[CMSG_SPACE(sizeof(timespec)) + CMSG_SPACE(sizeof(timespec) * 3)];
+     std::memset(control, 0, sizeof(control));
+     std::memset(from_addr, 0, sizeof(*from_addr));
+ 
+@@ -2780,13 +2808,16 @@
+     msg.msg_control = control;
+     msg.msg_controllen = sizeof(control);
+ 
+-    const ssize_t rc = recvmsg(state->peer_fd, &msg, 0);
++    const ssize_t rc = recvmsg(state->peer_fd, &msg, MSG_DONTWAIT);
++    const int receive_error = errno;
+     const uint64_t userspace_rx_rt_ns = realtime_ns();
+     const uint64_t userspace_rx_mono_ns = monotonic_ns();
+     if (userspace_rx_mono_ns_out != nullptr) *userspace_rx_mono_ns_out = userspace_rx_mono_ns;
+     if (from_len != nullptr) *from_len = static_cast<socklen_t>(msg.msg_namelen);
+ 
+-    if (rc <= 0) return rc;
++    if (rc < 0) { errno = receive_error; return rc; }
++    if ((msg.msg_flags & MSG_TRUNC) != 0) { errno = EMSGSIZE; return -1; }
++    if (rc == 0) return rc;
+ 
+     uint64_t kernel_rx_rt_ns = 0;
+     for (cmsghdr *cmsg = CMSG_FIRSTHDR(&msg); cmsg != nullptr; cmsg = CMSG_NXTHDR(&msg, cmsg)) {
+@@ -3455,6 +3486,7 @@
+             uint32_t tx_id = 0;
+             {
+                 std::lock_guard<std::mutex> send_lock(state->peer_send_mutex);
++                if (!state->running.load(std::memory_order_acquire)) break;
+                 if (state->peer_tx_kernel_timestamp_enabled && trace_ordinal != 0) {
+                     tx_id = state->next_peer_tx_timestamp_id;
+                     std::lock_guard<std::mutex> timestamp_lock(state->timestamp_mutex);
+@@ -3686,6 +3718,7 @@
+         jint tun_fd,
+         jstring peer_lan_ip,
+         jint peer_port,
++        jint local_port,
+         jstring my_fabricated_ip,
+         jstring peer_fabricated_ip,
+         jstring vpn_address,
+@@ -3695,7 +3728,9 @@
+         jint mtu,
+         jstring raw_capture_path,
+         jobject callbacks) {
+-    if (tun_fd < 0 || callbacks == nullptr) {
++    if (tun_fd < 0 || callbacks == nullptr || peer_port < 1 || peer_port > 65535 ||
++        local_port < 1 || local_port > 65535) {
++        if (tun_fd >= 0) close(tun_fd);
+         return env->NewLongArray(0);
+     }
+ 
+@@ -3770,11 +3805,16 @@
+     }
+     state->bridge_fd = bridge_fds[0];
+     state->bridge_fd_for_jvm = bridge_fds[1];
+-    set_nonblocking(state->bridge_fd);
+-
+-    set_nonblocking(state->tun_fd);
+-
+-    state->peer_fd = socket(AF_INET, SOCK_DGRAM, 0);
++    if (!set_nonblocking(state->bridge_fd) || !set_nonblocking(state->tun_fd)) {
++        close_fd(state->bridge_fd);
++        close_fd(state->bridge_fd_for_jvm);
++        env->DeleteGlobalRef(state->callbacks);
++        close_fd(state->tun_fd);
++        delete state;
++        return env->NewLongArray(0);
++    }
++
++    state->peer_fd = socket(AF_INET, SOCK_DGRAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+     if (state->peer_fd < 0) {
+         LOGE("peer socket creation failed: %d", errno);
+         close_fd(state->bridge_fd);
+@@ -3786,8 +3826,7 @@
+         return env->NewLongArray(0);
+     }
+ 
+-    int reuse = 1;
+-    setsockopt(state->peer_fd, SOL_SOCKET, SO_REUSEADDR, &reuse, sizeof(reuse));
++    // A second session must not share this unicast endpoint and steal datagrams.
+     int buffer_bytes = 65536;
+     setsockopt(state->peer_fd, SOL_SOCKET, SO_RCVBUF, &buffer_bytes, sizeof(buffer_bytes));
+     setsockopt(state->peer_fd, SOL_SOCKET, SO_SNDBUF, &buffer_bytes, sizeof(buffer_bytes));
+@@ -3825,7 +3864,7 @@
+                              SOF_TIMESTAMPING_TX_SCHED |
+                              SOF_TIMESTAMPING_TX_SOFTWARE |
+                              SOF_TIMESTAMPING_OPT_ID |
+-                             SOF_TIMESTAMPING_OPT_CMSG;
++                             SOF_TIMESTAMPING_OPT_TSONLY;
+     state->peer_tx_kernel_timestamp_enabled = (setsockopt(state->peer_fd, SOL_SOCKET, SO_TIMESTAMPING, &tx_timestamp_flags, sizeof(tx_timestamp_flags)) == 0);
+     state->next_peer_tx_timestamp_id = 0u;
+     state->pending_tx_timestamps.clear();
+@@ -3845,46 +3884,12 @@
+                     false,
+                     std::string("[WIFI-TRUTH] tx_timestamping=") +
+                         (state->peer_tx_kernel_timestamp_enabled ? "enabled" : "failed") +
+-                        " flags=SOFTWARE|TX_SCHED|TX_SOFTWARE|OPT_ID|OPT_CMSG");
+-
+-    // ── Source-IP bind: root-free hotspot-owner fix (see diagnosis option a) ──
+-    // Previously this always bound INADDR_ANY and relied on the JVM
+-    // preparePeerSocket() callback to pin the socket to a TRANSPORT_WIFI
+-    // Network. On the hotspot HOST that Network never exists (ap0/wlan1 is not
+-    // published by ConnectivityManager), the JVM bind failed and the backend
+-    // aborted — the "UDP-OUT Error: null", stuck-at-bridge host bug.
+-    //
+-    // Fix: discover our own live IPv4 on the SAME SUBNET as the peer and bind
+-    // the socket's SOURCE address to it. A UDP socket bound to source
+-    // 192.168.x.1 and connect()-ed to 192.168.x.y egresses the hotspot
+-    // interface via the main route table — no root, no SO_BINDTODEVICE. In
+-    // ordinary station mode this binds to the STA's own same-subnet address
+-    // (exactly what the WiFi Network would have used), so the normal path is
+-    // unchanged. If no same-subnet address exists yet we fall back to the old
+-    // INADDR_ANY bind + JVM-network path.
+-    std::array<uint8_t, 4> src_ip = state->configured_local_lan_ip;
+-    unsigned int src_if_index = state->configured_local_if_index;
+-    bool have_src_ip = state->has_configured_local_lan_ip;
+-    if (!have_src_ip) {
+-        have_src_ip = find_local_ipv4_for_peer(state->peer_lan_ip, src_ip, src_if_index);
+-    }
+-
+-    sockaddr_in bind_addr{};
+-    bind_addr.sin_family = AF_INET;
+-    bind_addr.sin_port = htons(static_cast<uint16_t>(peer_port));
+-    if (have_src_ip) {
+-        std::memcpy(&bind_addr.sin_addr, src_ip.data(), 4);
+-    } else {
+-        bind_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+-    }
+-    bool bind_ok = (bind(state->peer_fd, reinterpret_cast<sockaddr *>(&bind_addr), sizeof(bind_addr)) == 0);
+-    if (!bind_ok && have_src_ip) {
+-        // The source address may have just vanished (roam/teardown). Retry once
+-        // with INADDR_ANY so we still come up with a usable socket.
+-        LOGW("source-IP bind failed (errno=%d); retrying INADDR_ANY", errno);
+-        bind_addr.sin_addr.s_addr = htonl(INADDR_ANY);
+-        bind_ok = (bind(state->peer_fd, reinterpret_cast<sockaddr *>(&bind_addr), sizeof(bind_addr)) == 0);
+-    }
++                        " flags=SOFTWARE|TX_SCHED|TX_SOFTWARE|OPT_ID|OPT_TSONLY");
++
++    // Source IPv4/interface were locked by the resolver before creating the VPN.
++    // Our listener port is independent of the destination advertised by the peer.
++    const unsigned int src_if_index = state->configured_local_if_index;
++    const bool bind_ok = bind_peer_source(state, static_cast<int>(local_port));
+     if (!bind_ok) {
+         LOGE("peer socket bind failed: %d", errno);
+         close_fd(state->peer_fd);
+@@ -3903,26 +3908,13 @@
+         pin_socket_egress_interface(state->peer_fd, src_if_index);
+     }
+ 
+-    if (have_src_ip) {
+-        char src_msg[176];
+-        std::snprintf(src_msg, sizeof(src_msg),
+-                      "[HOTSPOT-FIX] source-IP bind %u.%u.%u.%u:%d (if=%u) for peer %u.%u.%u.%u",
+-                      static_cast<unsigned>(src_ip[0]), static_cast<unsigned>(src_ip[1]),
+-                      static_cast<unsigned>(src_ip[2]), static_cast<unsigned>(src_ip[3]),
+-                      static_cast<int>(peer_port), src_if_index,
+-                      static_cast<unsigned>(state->peer_lan_ip[0]), static_cast<unsigned>(state->peer_lan_ip[1]),
+-                      static_cast<unsigned>(state->peer_lan_ip[2]), static_cast<unsigned>(state->peer_lan_ip[3]));
+-        emit_native_log(env, state, kNativeLogInfo, false, src_msg);
+-    }
+-
+     std::memset(&state->peer_addr, 0, sizeof(state->peer_addr));
+     state->peer_addr.sin_family = AF_INET;
+     state->peer_addr.sin_port = htons(static_cast<uint16_t>(peer_port));
+     std::memcpy(&state->peer_addr.sin_addr, state->peer_lan_ip.data(), 4);
+ 
+-    const int callback_fd = dup(state->peer_fd);
+-    if (callback_fd < 0) {
+-        LOGE("dup(peer_fd) failed: %d", errno);
++    if (!prepare_peer_socket_callback(env, state)) {
++        LOGE("Peer socket protection or exact network binding failed");
+         close_fd(state->peer_fd);
+         close_fd(state->bridge_fd);
+         close_fd(state->bridge_fd_for_jvm);
+@@ -3933,37 +3925,6 @@
+         return env->NewLongArray(0);
+     }
+ 
+-    const jboolean prepared_ok = env->CallBooleanMethod(state->callbacks, state->prepare_peer_socket_mid, static_cast<jint>(callback_fd));
+-    if (env->ExceptionCheck()) {
+-        env->ExceptionClear();
+-    }
+-    if (prepared_ok != JNI_TRUE) {
+-        if (have_src_ip) {
+-            // EXPECTED on the hotspot HOST: there is no TRANSPORT_WIFI Network for
+-            // the JVM to bind to, so preparePeerSocket() reports failure. We have
+-            // already source-IP-bound the socket to our same-subnet address, which
+-            // is sufficient for egress, so we continue instead of aborting (the old
+-            // behaviour that produced the stuck "UDP-OUT Error: null" host bug).
+-            // We also pin the egress interface as belt-and-suspenders for OEM ROMs
+-            // that still policy-route VPN-protected sockets onto the default net.
+-            pin_socket_egress_interface(state->peer_fd, src_if_index);
+-            emit_native_log(env, state, kNativeLogWarn, false,
+-                            "[HOTSPOT-FIX] no WiFi Network to bind (hotspot-owner role); "
+-                            "proceeding on source-IP bind + pinned egress interface");
+-        } else {
+-            LOGE("preparePeerSocket callback failed");
+-            close_fd(state->peer_fd);
+-            close_fd(state->bridge_fd);
+-            close_fd(state->bridge_fd_for_jvm);
+-            env->DeleteGlobalRef(state->callbacks);
+-            state->callbacks = nullptr;
+-            close_fd(state->tun_fd);
+-            delete state;
+-            return env->NewLongArray(0);
+-        }
+-    }
+-
+-    set_nonblocking(state->peer_fd);
+     if (!connect_udp_socket(state->peer_fd, state->peer_addr)) {
+         LOGE("peer socket connect failed: %d", errno);
+         close_fd(state->peer_fd);
+@@ -4125,57 +4086,24 @@
+         jobject /*thiz*/,
+         jlong handle) {
+     BackendState *state = from_handle(handle);
+-    if (state == nullptr || state->peer_fd < 0 || state->callbacks == nullptr) {
+-        return JNI_FALSE;
+-    }
+-    // Serialize disconnect/bind/reconnect with every gameplay and keepalive
+-    // send. The old code could reconfigure the same UDP file description while
+-    // peer_tx_loop was inside send(), producing intermittent ENOTCONN drops.
++    if (state == nullptr || state->peer_fd < 0 || state->callbacks == nullptr ||
++        !state->running.load(std::memory_order_acquire)) return JNI_FALSE;
++    // Android Network.bindSocket requires an unconnected socket. Serialize the
++    // short disconnect/bind/reconnect transaction with every native send.
+     std::lock_guard<std::mutex> send_lock(state->peer_send_mutex);
+-    const int callback_fd = dup(state->peer_fd);
+-    if (callback_fd < 0) {
+-        return JNI_FALSE;
+-    }
++    if (!state->running.load(std::memory_order_acquire)) return JNI_FALSE;
+     if (state->peer_socket_connected.load(std::memory_order_acquire)) {
+-        (void) disconnect_udp_socket(state->peer_fd);
++        if (!disconnect_udp_socket(state->peer_fd)) return JNI_FALSE;
+         state->peer_socket_connected.store(false, std::memory_order_release);
+     }
+-    std::array<uint8_t, 4> rebind_src_ip = state->configured_local_lan_ip;
+-    unsigned int rebind_if_index = state->configured_local_if_index;
+-    const bool rebind_have_route = state->has_configured_local_lan_ip ||
+-        find_local_ipv4_for_peer(state->peer_lan_ip, rebind_src_ip, rebind_if_index);
+-    if (rebind_have_route && rebind_if_index > 0) {
+-        pin_socket_egress_interface(state->peer_fd, rebind_if_index);
+-    }
+-    const jboolean prepared_ok = env->CallBooleanMethod(state->callbacks, state->prepare_peer_socket_mid, static_cast<jint>(callback_fd));
+-    if (env->ExceptionCheck()) {
+-        env->ExceptionClear();
+-    }
+-    if (prepared_ok != JNI_TRUE) {
+-        // Hotspot-owner role: there is no TRANSPORT_WIFI Network to bind to (see
+-        // nativeStart). We just disconnected the socket above, so we must NOT
+-        // bail out leaving it disconnected — that would silently drop the host's
+-        // data plane on any mid-match network churn. Re-pin egress to our
+-        // same-subnet interface and fall through to reconnect.
+-        if (rebind_have_route) {
+-            if (rebind_if_index > 0) pin_socket_egress_interface(state->peer_fd, rebind_if_index);
+-            emit_native_log(env, state, kNativeLogWarn, false,
+-                            "[HOTSPOT-FIX] rebind: no WiFi Network (hotspot-owner); "
+-                            "re-pinned egress + reconnecting");
+-        } else {
+-            // Restore the previously working peer connection before reporting
+-            // that rebinding failed. Never leave the live data plane detached.
+-            const bool restored = connect_udp_socket(state->peer_fd, state->peer_addr);
+-            state->peer_socket_connected.store(restored, std::memory_order_release);
+-            return JNI_FALSE;
+-        }
+-    }
+-    if (!connect_udp_socket(state->peer_fd, state->peer_addr)) {
+-        state->peer_socket_connected.store(false, std::memory_order_release);
+-        return JNI_FALSE;
+-    }
+-    state->peer_socket_connected.store(true, std::memory_order_release);
+-    return JNI_TRUE;
++    pin_socket_egress_interface(state->peer_fd, state->configured_local_if_index);
++    const bool prepared = prepare_peer_socket_callback(env, state);
++    if (!state->running.load(std::memory_order_acquire)) return JNI_FALSE;
++    // Restore connected mode even if preparation failed. Report that failure
++    // so the service retries instead of claiming its intended rebind worked.
++    const bool connected = connect_udp_socket(state->peer_fd, state->peer_addr);
++    state->peer_socket_connected.store(connected, std::memory_order_release);
++    return prepared && connected ? JNI_TRUE : JNI_FALSE;
+ }
+ 
+ extern "C" JNIEXPORT jboolean JNICALL
+@@ -4282,9 +4210,9 @@
+ Java_com_peerlink_app_tunnel_NativePeerLinkBackend_nativePollStats(
+         JNIEnv *env, jobject /*thiz*/, jlong handle) {
+     BackendState *state = from_handle(handle);
+-    jlongArray result = env->NewLongArray(11);
++    jlongArray result = env->NewLongArray(12);
+     if (result == nullptr) return nullptr;
+-    const jlong values[11] = {
++    const jlong values[12] = {
+         state ? static_cast<jlong>(state->stats.tunnel_out_packets.load(std::memory_order_relaxed)) : 0,
+         state ? static_cast<jlong>(state->stats.tunnel_out_bytes.load(std::memory_order_relaxed)) : 0,
+         state ? static_cast<jlong>(state->stats.tunnel_in_packets.load(std::memory_order_relaxed)) : 0,
+@@ -4296,7 +4224,8 @@
+         state ? static_cast<jlong>(state->stats.dropped_packets.load(std::memory_order_relaxed)) : 0,
+         state ? static_cast<jlong>(state->stats.keepalive_tx.load(std::memory_order_relaxed)) : 0,
+         state ? static_cast<jlong>(state->stats.keepalive_rx.load(std::memory_order_relaxed)) : 0,
++        state && state->running.load(std::memory_order_acquire) ? 1 : 0,
+     };
+-    env->SetLongArrayRegion(result, 0, 11, values);
++    env->SetLongArrayRegion(result, 0, 12, values);
+     return result;
+ }
+--- a/app/src/main/jni/peerlink_backend.h
++++ b/app/src/main/jni/peerlink_backend.h
+@@ -13,6 +13,7 @@
+         jint tun_fd,
+         jstring peer_lan_ip,
+         jint peer_port,
++        jint local_port,
+         jstring my_fabricated_ip,
+         jstring peer_fabricated_ip,
+         jstring vpn_address,
