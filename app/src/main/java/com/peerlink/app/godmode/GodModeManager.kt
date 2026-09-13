@@ -184,7 +184,13 @@ object GodModeManager {
     private val guardianPulseRunning = AtomicBoolean(false)
     @Volatile private var lastGuardianRecoveryAttemptMs = 0L
     private var guardianJob: Job? = null
-    private const val GUARDIAN_RECOVERY_COOLDOWN_MS = 6_000L
+    // Photocopy of Shizuku's recovery posture: never hammer ADB. Each failed
+    // recovery doubles the wait (30s → 60s → 2m → 4m, capped at 5m). A
+    // successful recovery resets the cooldown. ADB is only touched while a
+    // wireless-debugging endpoint is actually visible (see guardianPulse).
+    private const val GUARDIAN_RECOVERY_COOLDOWN_MS = 30_000L
+    private const val GUARDIAN_RECOVERY_COOLDOWN_MAX_MS = 300_000L
+    @Volatile private var guardianRecoveryCooldownMs = GUARDIAN_RECOVERY_COOLDOWN_MS
     private const val GUARDIAN_PULSE_MS = 2_000L
 
     private val primeExitMarker = "__PEERLINK_EXIT__="
@@ -497,7 +503,15 @@ object GodModeManager {
                 updateSetupSnapshot(primeServerAlive = false)
                 _primeLinkState.value = PrimeLinkState.DEGRADED
                 val now = System.currentTimeMillis()
-                if (now - lastGuardianRecoveryAttemptMs < GUARDIAN_RECOVERY_COOLDOWN_MS) return@launch
+                if (now - lastGuardianRecoveryAttemptMs < guardianRecoveryCooldownMs) return@launch
+                // Shizuku only touches ADB while wireless debugging is actually
+                // advertising. Without an endpoint every connect attempt fails and
+                // (on OEMs like XOS) can trigger the wireless-debugging
+                // re-authorization prompt that kills the whole ADB session tree.
+                if (connectPort !in 1..65535) {
+                    AppState.appendLog("[PRIME-GUARD] Wireless debugging endpoint not visible — waiting, no ADB attempts")
+                    return@launch
+                }
                 lastGuardianRecoveryAttemptMs = now
                 _primeLinkState.value = PrimeLinkState.RECOVERING
                 AppState.appendLog("[PRIME-GUARD] PrimeServer heartbeat lost — automatic recovery starting")
@@ -506,12 +520,17 @@ object GodModeManager {
                     if (!PrimeClient.isAlive(timeoutMs = 350)) {
                         val recovered = ensurePrimeServerAlive(needBootstrap = false)
                         if (!recovered) {
+                            // Shizuku posture: back off after a failed start so the
+                            // OEM never sees rapid ADB connection attempts.
+                            guardianRecoveryCooldownMs = (guardianRecoveryCooldownMs * 2)
+                                .coerceAtMost(GUARDIAN_RECOVERY_COOLDOWN_MAX_MS)
                             _primeLinkState.value = PrimeLinkState.DEGRADED
                             if (active) setState(State.PRIME_MODE_ACTIVE, "Prime active · engine reconnect pending")
                             return@withPermit
                         }
                     }
 
+                    guardianRecoveryCooldownMs = GUARDIAN_RECOVERY_COOLDOWN_MS
                     _primeLinkState.value = PrimeLinkState.CONNECTED
                     AppState.primeServerAlive = true
                     updateSetupSnapshot(primeServerAlive = true)
@@ -562,6 +581,22 @@ object GodModeManager {
             else -> "Not paired"
         }
         AppState.appendLog("[PRIME-MODE ] init (bootstrapped=$bootstrapped pairedTrusted=$pairedTrusted keepGame=${getKeepGameInRam()})")
+    }
+
+    /**
+     * Called by BootReceiver after a Shizuku-style auto start of the engine at
+     * boot. Mirrors Shizuku's sendBinderToManager bookkeeping: the manager only
+     * records that the service is alive; no session commands run here. The
+     * user's saved Prime settings stay pending until the next explicit
+     * ACTIVATE, exactly like Shizuku after boot start.
+     */
+    fun onEngineAutoStarted(context: Context) {
+        if (!::appContext.isInitialized) appContext = context.applicationContext
+        PrimeClient.init(appContext)
+        AppState.primeServerAlive = true
+        updateSetupSnapshot(primeServerAlive = true)
+        saveBootstrapStatus("RECOVERY — PrimeServer launched on boot")
+        refreshSetupState(checkServer = true)
     }
 
     fun refreshSetupState(checkServer: Boolean = true) {

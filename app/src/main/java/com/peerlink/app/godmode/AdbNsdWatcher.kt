@@ -72,6 +72,16 @@ class AdbNsdWatcher(context: Context) {
     }
     fun stop() { stopPairingDiscovery(); stopConnectDiscovery() }
 
+    private fun isLoopbackPortOccupied(port: Int): Boolean = try {
+        java.net.ServerSocket().use {
+            it.bind(java.net.InetSocketAddress("127.0.0.1", port), 1)
+            false
+        }
+    } catch (_: java.io.IOException) {
+        // Shizuku AdbMdns.isPortAvailable: bind failure means adbd owns the port.
+        true
+    }
+
     private inner class Discovery(
         val type: String,
         val found: (Int) -> Unit,
@@ -110,8 +120,11 @@ class AdbNsdWatcher(context: Context) {
                             iface.inetAddresses.asSequence().any { it.address.contentEquals(host.address) }
                         }
                     }.getOrDefault(false)
+                    // Photocopy of Shizuku AdbMdns: an advertised port is only real
+                    // if adbd actually bound it on loopback. This proves the daemon
+                    // finished binding (replaces the old fixed 1.5s sleep).
                     if (!local || info.port !in 1..65535) return
-                    // Do not bind a probe socket to adbd's port: that can delay or race adbd startup.
+                    if (!isLoopbackPortOccupied(info.port)) return
                     selected = service.serviceName
                     found(info.port)
                 }

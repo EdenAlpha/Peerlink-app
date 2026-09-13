@@ -33,10 +33,22 @@ class PrimeShizukuBootstrapEngine(private val context: Context) {
         fun report(value: String) { stage = value; onStage(value) }
         try {
             withTimeoutOrNull(45_000L) {
-                if (!needBootstrap && context.checkSelfPermission(WRITE_SECURE_SETTINGS) ==
+                // Photocopy of Shizuku BootCompleteReceiver.adbStart / AdbDialogFragment:
+                // when the settings permission is held, wake adbd with the exact
+                // triple Shizuku writes before every NSD-based launch. This is what
+                // made the pre-rewrite engine revive itself reliably on XOS.
+                // adb_wifi_enabled=1 makes adbd advertise the TLS connect service,
+                // ADB_ENABLED=1 keeps the USB daemon alive so the wireless daemon
+                // can re-attach without the OEM's re-authorization prompt, and
+                // adb_allowed_connection_time=0 removes the pairing window check.
+                if (context.checkSelfPermission(WRITE_SECURE_SETTINGS) ==
                     PackageManager.PERMISSION_GRANTED) {
-                    // Request wireless debugging only; pairing still authorizes the connection.
-                    runCatching { Settings.Global.putInt(context.contentResolver, "adb_wifi_enabled", 1) }
+                    runCatching {
+                        val cr = context.contentResolver
+                        Settings.Global.putInt(cr, "adb_wifi_enabled", 1)
+                        Settings.Global.putInt(cr, Settings.Global.ADB_ENABLED, 1)
+                        Settings.Global.putLong(cr, "adb_allowed_connection_time", 0L)
+                    }
                 }
                 val ports = Channel<Int>(Channel.CONFLATED)
                 val discovery = AdbNsdWatcher(context).apply {
