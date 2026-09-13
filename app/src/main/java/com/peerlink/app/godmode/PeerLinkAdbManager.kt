@@ -61,6 +61,21 @@ class PeerLinkAdbManager private constructor(context: Context) :
                 Log.i(TAG, "Conscrypt installed as security provider #1")
             }
         }
+
+        // ── Quiet accessors for the ADB keepalive ──────────────────────────
+        // These never create an instance (unlike getInstance), so the keepalive
+        // cannot resurrect a torn-down session on its own.
+
+        fun getInstanceQuiet(): PeerLinkAdbManager? = INSTANCE
+
+        fun resetInstanceQuiet(context: Context) {
+            synchronized(this) {
+                try { INSTANCE?.disconnect() } catch (_: Exception) {}
+                INSTANCE = PeerLinkAdbManager(context.applicationContext).also {
+                    INSTANCE = it
+                }
+            }
+        }
     }
 
     private val appContext = context.applicationContext

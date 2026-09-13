@@ -658,11 +658,13 @@ object GodModeManager {
             onConnectPortFound = { host, port ->
                 connectHost = host; connectPort = port
                 _wirelessDebugOn.value = true
+                PrimeAdbKeepalive.onPortChanged(port)
                 AppState.appendLog("[PRIME-MODE ] Connect port cached: $host:$port")
             }
             onConnectPortLost = {
                 connectHost = null; connectPort = 0
                 _wirelessDebugOn.value = false
+                PrimeAdbKeepalive.onEndpointLost()
                 // mDNS loss is not proof that the detached PrimeServer died.
                 // The foreground guardian independently health-checks loopback.
                 AppState.appendLog("[PRIME-MODE ] Wireless-debugging advertisement lost; PrimeServer health checked separately")
@@ -778,6 +780,7 @@ object GodModeManager {
                 }
 
                 PrimeAuth.rotate(appContext)
+                PrimeAdbKeepalive.drop()
                 activationJob?.cancel()
                 activationRequested.set(false)
                 pairingRequested.set(false)
@@ -961,6 +964,9 @@ object GodModeManager {
     fun deactivateGodMode() {
         if (!deactivationRequested.compareAndSet(false, true)) return
         publishAction("deactivate", PrimeActionPhase.WORKING, "Restoring phone settings…")
+        // The held ADB session exists only to shield the engine; with Prime
+        // stopping, release it before restore commands run.
+        PrimeAdbKeepalive.drop()
         val inFlight = activationJob
         inFlight?.cancel()
         scope.launch {
@@ -1039,6 +1045,13 @@ object GodModeManager {
                 _primeWifiRetryState.value = null
                 if (needBootstrap) markBootstrapped()
                 saveBootstrapStatus(if (needBootstrap) "COMPLETE — PrimeServer launched" else "RECOVERY — PrimeServer launched")
+                // The engine is detached, but XOS tears the whole ADB session
+                // tree down when the last mTLS client leaves. Park one quiet
+                // connection for as long as anything may need the engine.
+                if (connectPort in 1..65535) {
+                    runCatching { PrimeAdbKeepalive.ensure(appContext, connectPort) }
+                        .onFailure { AppState.appendLog("[PRIME-MODE ] ADB keepalive unavailable: ${it.message}") }
+                }
                 return true
             }
             delay(300L)
