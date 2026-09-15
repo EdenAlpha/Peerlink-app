@@ -217,6 +217,11 @@ struct BackendStats {
     std::atomic<long long> peer_socket_events{0};
     std::atomic<long long> keepalive_tx{0};
     std::atomic<long long> keepalive_rx{0};
+    // F32 end-of-match signal: count and last-seen time of small (<55B) game
+    // payloads. Validated across both real captures: the uniform-54B tail is
+    // the only sub-55B traffic outside ordinary gameplay.
+    std::atomic<long long> small_game_packets{0};
+    std::atomic<long long> small_game_last_ms{0};
 };
 
 enum class TunInjectSource {
@@ -257,68 +262,15 @@ struct DeferredNativeLog {
     std::string message;
 };
 
-// Match telemetry snapshots protocol-relevant payloads. At steady state that
-// is the len-59 class used to learn the decode table; full-time control (26),
-// setup boundaries (14/266/272), and large events are also retained.
-// F15 (3-Sep real-match evidence): the current eFootball protocol no longer
-// emits 0.9-1.2KB goal messages mid-match. The 3:0 match showed ZERO payload
-// events >=300 outside kickoff; the candidates are the 59/63 periodic sync
-// (every ~60s) and the 102-117-byte event channel (~1pps). The snapshot set
-// is therefore widened to capture EVERY evidence-bearing class:
-//   - len 39/59/63: keystream classes + periodic state sync
-//   - len 26/14/266/272: control, probe, exchange boundaries
-//   - 100..120: the mid-match event channel (goal-event suspects)
-//   - 200..2000: handshake (4x256-family), half-time/summary clusters
-//   - custom game STUN: player identity frames (0x9090 IDs)
-// The reader filters what it decodes; the tracker logs heads as wire
-// evidence so the next capture can be analyzed offline with full payloads.
-// Two SPSC rings avoid a shared mutex between peer RX, TUN RX and the Kotlin
-// poller. A cumulative drop count makes settlement fail closed.
-constexpr size_t kMatchHeadCaptureMax = 60;
-constexpr size_t kMatchEventRingCapacity = 8192;
-constexpr uint32_t kMatchTelemetryMagic = 0x32544D50u;  // "PMT2" little-endian
-constexpr uint16_t kMatchTelemetryVersion = 4;  // v4: +TUN/RX gap health counters
-constexpr uint16_t kMatchTelemetryHeaderSize = 120;
-constexpr uint16_t kMatchTelemetryEventSize = 84;
-
-struct GamePacketEvent {
-    uint64_t ordinal = 0;
-    uint64_t ts_ms = 0;
-    uint16_t payload_len = 0;
-    uint8_t direction = 0;  // 0=outgoing, 1=incoming
-    uint8_t head_len = 0;
-    std::array<uint8_t, kMatchHeadCaptureMax> head{};
-    uint16_t sport = 0;  // UDP source port of the game-channel flow
-    uint16_t dport = 0;  // UDP destination port of the game-channel flow
-};
-
-struct MatchEventRing {
-    std::array<GamePacketEvent, kMatchEventRingCapacity> slots{};
-    std::atomic<uint64_t> write_index{0};
-    std::atomic<uint64_t> read_index{0};
-};
-
-struct MatchTelemetry {
-    std::atomic<uint64_t> game_out_packets{0};
-    std::atomic<uint64_t> game_in_packets{0};
-    std::atomic<uint64_t> game_out_bytes{0};
-    std::atomic<uint64_t> game_in_bytes{0};
-    std::atomic<uint64_t> last_out_ms{0};
-    std::atomic<uint64_t> last_in_ms{0};
-    std::atomic<uint64_t> first_traffic_ms{0};
-    std::atomic<uint64_t> next_ordinal{1};
-    std::atomic<uint64_t> dropped_snapshots{0};
-    // F15 VPN-path health (3-Sep cutoff forensics): count and last-seen time
-    // of >=1s stalls on the TUN-read path and the peer-RX path. A mid-game
-    // teardown with zero counters here is game-side, not VPN-side.
-    std::atomic<uint64_t> tun_gaps_1s{0};
-    std::atomic<uint64_t> tun_gap_last_ms{0};
-    std::atomic<uint64_t> rx_gaps_1s{0};
-    std::atomic<uint64_t> rx_gap_last_ms{0};
-    MatchEventRing outgoing;
-    MatchEventRing incoming;
-};
-
+// F32: the packet score-detection path (telemetry rings, PMT2 serialization,
+// goal decode) is removed entirely. The only surviving per-packet signal is a
+// tiny pair of counters used by the capture trigger: small game payloads
+// (<55 bytes). In every real capture the end-of-match tail is the ONLY place
+// where sub-55B game payloads appear (uniform 54B @ ~38ms cadence), while
+// goals, half-time, replays and transient dips (lowest observed: 17pps) never
+// produce them. The engine watches these counters plus the PPS feed to time
+// screen capture; no payload content is decoded anywhere.
+constexpr size_t kSmallGamePayloadMax = 55;
 
 struct RawCaptureSlot {
     uint64_t mono_ns = 0;
@@ -416,7 +368,6 @@ struct BackendState {
     std::mutex keepalive_mutex;
     std::condition_variable keepalive_cv;
     BackendStats stats;
-    MatchTelemetry telemetry;
 
     std::mutex peer_tx_mutex;
     std::condition_variable peer_tx_cv;
@@ -693,69 +644,15 @@ uint64_t monotonic_ms() {
     return monotonic_ns() / 1000000ULL;
 }
 
-bool is_game_stun_payload(const uint8_t *payload, size_t payload_length) {
-    // eFootball custom STUN: magic 21 12 a4 42 at bytes 4..7 with types
-    // 0x08xx/0x09xx. These frames carry the 10-digit ASCII player IDs near
-    // offset 32 (attribute 0x9090) used for identity attribution.
-    if (payload_length < 32 || payload == nullptr) return false;
-    if (payload[4] != 0x21 || payload[5] != 0x12 || payload[6] != 0xA4 || payload[7] != 0x42) return false;
-    const uint8_t type_hi = payload[0];
-    return type_hi == 0x08 || type_hi == 0x09;
-}
-
-bool should_snapshot_match_payload(const uint8_t *payload, size_t payload_length) {
-    if (payload_length == 59 || payload_length == 26 || payload_length == 14 ||
-        payload_length == 39 || payload_length == 63 ||
-        payload_length == 266 || payload_length == 272) {
-        return true;
-    }
-    if (payload_length >= 100 && payload_length <= 120) return true;  // event channel
-    if (payload_length >= 200 && payload_length <= 2000) return true; // handshake / event clusters
-    return is_game_stun_payload(payload, payload_length);
-}
-
-bool push_match_event(MatchEventRing &ring, const GamePacketEvent &event) {
-    const uint64_t write = ring.write_index.load(std::memory_order_relaxed);
-    const uint64_t read = ring.read_index.load(std::memory_order_acquire);
-    if (write - read >= kMatchEventRingCapacity) return false;
-    ring.slots[write % kMatchEventRingCapacity] = event;
-    ring.write_index.store(write + 1, std::memory_order_release);
-    return true;
-}
-
-void record_match_telemetry(BackendState *state,
-                            bool outgoing,
-                            const uint8_t *payload,
-                            size_t payload_length,
-                            uint64_t now_ms,
-                            uint16_t sport,
-                            uint16_t dport) {
-    MatchTelemetry &telemetry = state->telemetry;
-    auto &packets = outgoing ? telemetry.game_out_packets : telemetry.game_in_packets;
-    auto &bytes = outgoing ? telemetry.game_out_bytes : telemetry.game_in_bytes;
-    auto &last = outgoing ? telemetry.last_out_ms : telemetry.last_in_ms;
-    packets.fetch_add(1, std::memory_order_relaxed);
-    bytes.fetch_add(static_cast<uint64_t>(payload_length), std::memory_order_relaxed);
-    last.store(now_ms, std::memory_order_release);
-    uint64_t first = 0;
-    (void) telemetry.first_traffic_ms.compare_exchange_strong(
-            first, now_ms, std::memory_order_acq_rel, std::memory_order_acquire);
-
-    if (!should_snapshot_match_payload(payload, payload_length)) return;
-    GamePacketEvent event{};
-    event.ordinal = telemetry.next_ordinal.fetch_add(1, std::memory_order_relaxed);
-    event.ts_ms = now_ms;
-    event.payload_len = static_cast<uint16_t>(std::min<size_t>(payload_length, 0xFFFFu));
-    event.direction = outgoing ? 0u : 1u;
-    event.head_len = static_cast<uint8_t>(std::min<size_t>(payload_length, kMatchHeadCaptureMax));
-    event.sport = sport;
-    event.dport = dport;
-    if (payload != nullptr && event.head_len > 0) {
-        std::memcpy(event.head.data(), payload, event.head_len);
-    }
-    MatchEventRing &ring = outgoing ? telemetry.outgoing : telemetry.incoming;
-    if (!push_match_event(ring, event)) {
-        telemetry.dropped_snapshots.fetch_add(1, std::memory_order_relaxed);
+// F32: the only surviving per-packet signal. A small game payload (<55B) is
+// the validated end-of-match tail marker; two plain counters feed the stats
+// poll. No payload content is retained or decoded.
+void record_match_packet_signal(BackendState *state,
+                                size_t payload_length,
+                                uint64_t now_ms) {
+    if (payload_length < kSmallGamePayloadMax) {
+        state->stats.small_game_packets.fetch_add(1, std::memory_order_relaxed);
+        state->stats.small_game_last_ms.store(now_ms, std::memory_order_release);
     }
 }
 
@@ -2698,12 +2595,7 @@ void inject_inner_ipv4_to_tun(JNIEnv *env,
     if (enqueue_tun_inject(state, std::move(packet), TunInjectSource::kPeer, true, flow_hash,
                            meta != nullptr ? meta->seq : 0,
                            meta != nullptr ? static_cast<uint32_t>(meta->sender_id) : 0)) {
-        record_match_telemetry(state, false,
-                               inner_packet + parsed.udp_payload_offset,
-                               parsed.udp_payload_length,
-                               now_ms,
-                               src_port,
-                               static_cast<uint16_t>(target_port));
+        record_match_packet_signal(state, parsed.udp_payload_length, now_ms);
         maybe_log_flow_ipv4(env, state, flow_hash, src_ip, src_port, dest_ip, static_cast<uint16_t>(target_port),
                            "INJECT_PEER", "peer-to-tun");
     } else {
@@ -2765,12 +2657,7 @@ void inject_inner_ipv6_to_tun(JNIEnv *env,
         if (enqueue_tun_inject(state, std::move(packet), TunInjectSource::kPeer, true, flow_hash,
                                meta != nullptr ? meta->seq : 0,
                                meta != nullptr ? static_cast<uint32_t>(meta->sender_id) : 0)) {
-            record_match_telemetry(state, false,
-                                   inner_packet + parsed.udp_payload_offset,
-                                   parsed.udp_payload_length,
-                                   now_ms,
-                                   src_port,
-                                   static_cast<uint16_t>(target_port));
+            record_match_packet_signal(state, parsed.udp_payload_length, now_ms);
             maybe_log_flow_ipv6(env, state, flow_hash, src_ip, src_port, dest_ip, static_cast<uint16_t>(target_port),
                                "INJECT_PEER", "peer-to-tun");
         } else {
@@ -2876,14 +2763,6 @@ void handle_peer_packet(JNIEnv *env,
         tunnel_flags = meta.flags;
     }
     const uint64_t rx_now_ns = userspace_rx_ns != 0 ? userspace_rx_ns : monotonic_ns();
-    // F15 health counter: >=1s stall on the peer-RX path (monotonic ms).
-    {
-        const uint64_t prev = state->last_peer_rx_ns;
-        if (prev != 0 && rx_now_ns - prev >= 1000000000ULL) {
-            state->telemetry.rx_gaps_1s.fetch_add(1, std::memory_order_relaxed);
-            state->telemetry.rx_gap_last_ms.store(rx_now_ns / 1000000ULL, std::memory_order_relaxed);
-        }
-    }
     maybe_log_gap(env, state, "NATIVE/RX-GAP", rx_now_ns, state->last_peer_rx_ns, state->last_peer_rx_gap_log_ms, state->last_rx_subsevere_log_ms, meta.valid ? static_cast<long long>(meta.seq) : -1LL, packet_length);
     if (payload_offset > packet_length || payload_length > packet_length - payload_offset || payload_length == 0) {
         state->stats.dropped_packets.fetch_add(1, std::memory_order_relaxed);
@@ -3055,12 +2934,7 @@ void handle_tun_ipv4(JNIEnv *env, BackendState *state, const uint8_t *packet, si
             }
             if (send_tunnel_frame(env, state, packet, parsed.packet_length, seq, t0_ns, s1_ns,
                                   flow_hash, tunnel_flags, 4, parsed.source_port, parsed.dest_port)) {
-                record_match_telemetry(state, true,
-                                       packet + parsed.udp_payload_offset,
-                                       parsed.udp_payload_length,
-                                       now_ms,
-                                       parsed.source_port,
-                                       parsed.dest_port);
+                record_match_packet_signal(state, parsed.udp_payload_length, now_ms);
             }
             break;
         }
@@ -3161,12 +3035,7 @@ void handle_tun_ipv6(JNIEnv *env, BackendState *state, const uint8_t *packet, si
         if (send_tunnel_frame(env, state, packet, parsed.packet_length, seq, t0_ns, s1_ns,
                               flow_hash, tunnel_flags, 6, parsed.source_port, parsed.dest_port) &&
             parsed.next_header == kProtocolUdp) {
-            record_match_telemetry(state, true,
-                                   packet + parsed.udp_payload_offset,
-                                   parsed.udp_payload_length,
-                                   monotonic_ms(),
-                                   parsed.source_port,
-                                   parsed.dest_port);
+            record_match_packet_signal(state, parsed.udp_payload_length, monotonic_ms());
         }
         return;
     }
@@ -3353,14 +3222,6 @@ void tun_reader_loop(BackendState *state) {
         if (rc > 0) {
             const size_t packet_length = static_cast<size_t>(rc);
             const uint64_t t0_ns = monotonic_ns();
-            // F15 health counter: >=1s stall on the TUN-read path (monotonic ms).
-            {
-                const uint64_t prev = state->last_tun_read_ns;
-                if (prev != 0 && t0_ns - prev >= 1000000000ULL) {
-                    state->telemetry.tun_gaps_1s.fetch_add(1, std::memory_order_relaxed);
-                    state->telemetry.tun_gap_last_ms.store(t0_ns / 1000000ULL, std::memory_order_relaxed);
-                }
-            }
             maybe_log_gap(env, state, "NATIVE/T0-GAP", t0_ns, state->last_tun_read_ns, state->last_tun_gap_log_ms, state->last_tun_subsevere_log_ms, static_cast<long long>(state->outbound_seq), packet_length);
             const uint8_t version = tun_buffer[0] >> 4;
             if (version == 4) {
@@ -4138,93 +3999,13 @@ Java_com_peerlink_app_tunnel_NativePeerLinkBackend_nativeVerifyPeerPath(
     return JNI_FALSE;
 }
 
-// Versioned, bounds-checkable match telemetry. Only selected packet heads are
-// copied into the SPSC rings; counters still cover every tunneled game packet.
-extern "C" JNIEXPORT jbyteArray JNICALL
-Java_com_peerlink_app_tunnel_NativePeerLinkBackend_nativePollMatchTelemetry(
-        JNIEnv *env, jobject /*thiz*/, jlong handle) {
-    BackendState *state = from_handle(handle);
-    if (state == nullptr) return env->NewByteArray(0);
-
-    std::vector<GamePacketEvent> events;
-    events.reserve(kMatchEventRingCapacity * 2);
-    auto drain = [&events](MatchEventRing &ring) {
-        uint64_t read = ring.read_index.load(std::memory_order_relaxed);
-        const uint64_t write = ring.write_index.load(std::memory_order_acquire);
-        while (read < write) {
-            events.push_back(ring.slots[read % kMatchEventRingCapacity]);
-            read++;
-        }
-        ring.read_index.store(read, std::memory_order_release);
-    };
-    drain(state->telemetry.outgoing);
-    drain(state->telemetry.incoming);
-    std::sort(events.begin(), events.end(), [](const GamePacketEvent &a, const GamePacketEvent &b) {
-        return a.ordinal < b.ordinal;
-    });
-
-    const size_t count = std::min<size_t>(events.size(), 0xFFFFu);
-    const size_t total = kMatchTelemetryHeaderSize + count * kMatchTelemetryEventSize;
-    if (total > static_cast<size_t>(INT32_MAX)) return env->NewByteArray(0);
-    std::vector<uint8_t> buffer(total, 0);
-    auto put_u16 = [&buffer](size_t offset, uint16_t value) {
-        buffer[offset] = static_cast<uint8_t>(value & 0xFFu);
-        buffer[offset + 1] = static_cast<uint8_t>((value >> 8u) & 0xFFu);
-    };
-    auto put_u32 = [&buffer](size_t offset, uint32_t value) {
-        for (unsigned i = 0; i < 4; ++i) buffer[offset + i] = static_cast<uint8_t>((value >> (8u * i)) & 0xFFu);
-    };
-    auto put_u64 = [&buffer](size_t offset, uint64_t value) {
-        for (unsigned i = 0; i < 8; ++i) buffer[offset + i] = static_cast<uint8_t>((value >> (8u * i)) & 0xFFu);
-    };
-    put_u32(0, kMatchTelemetryMagic);
-    put_u16(4, kMatchTelemetryVersion);
-    put_u16(6, kMatchTelemetryHeaderSize);
-    put_u16(8, kMatchTelemetryEventSize);
-    put_u16(10, static_cast<uint16_t>(count));
-    put_u32(12, 0);
-    put_u64(16, state->telemetry.game_out_packets.load(std::memory_order_acquire));
-    put_u64(24, state->telemetry.game_in_packets.load(std::memory_order_acquire));
-    put_u64(32, state->telemetry.game_out_bytes.load(std::memory_order_acquire));
-    put_u64(40, state->telemetry.game_in_bytes.load(std::memory_order_acquire));
-    put_u64(48, state->telemetry.last_out_ms.load(std::memory_order_acquire));
-    put_u64(56, state->telemetry.last_in_ms.load(std::memory_order_acquire));
-    put_u64(64, state->telemetry.first_traffic_ms.load(std::memory_order_acquire));
-    put_u64(72, monotonic_ms());
-    put_u64(80, state->telemetry.dropped_snapshots.load(std::memory_order_acquire));
-    // v4 health counters: >=1s TUN-read / peer-RX stall counts + last-seen
-    // monotonic ms. Zero counters at a mid-game teardown prove the VPN path
-    // was clean and the cutoff was game-side.
-    put_u64(88, state->telemetry.tun_gaps_1s.load(std::memory_order_acquire));
-    put_u64(96, state->telemetry.tun_gap_last_ms.load(std::memory_order_acquire));
-    put_u64(104, state->telemetry.rx_gaps_1s.load(std::memory_order_acquire));
-    put_u64(112, state->telemetry.rx_gap_last_ms.load(std::memory_order_acquire));
-    for (size_t i = 0; i < count; ++i) {
-        const GamePacketEvent &event = events[i];
-        const size_t offset = kMatchTelemetryHeaderSize + i * kMatchTelemetryEventSize;
-        put_u64(offset, event.ordinal);
-        put_u64(offset + 8, event.ts_ms);
-        buffer[offset + 16] = event.direction;
-        put_u16(offset + 17, event.payload_len);
-        buffer[offset + 19] = event.head_len;
-        std::memcpy(buffer.data() + offset + 20, event.head.data(), kMatchHeadCaptureMax);
-        put_u16(offset + 80, event.sport);
-        put_u16(offset + 82, event.dport);
-    }
-    jbyteArray result = env->NewByteArray(static_cast<jsize>(buffer.size()));
-    if (result == nullptr) return env->NewByteArray(0);
-    env->SetByteArrayRegion(result, 0, static_cast<jsize>(buffer.size()),
-                            reinterpret_cast<const jbyte *>(buffer.data()));
-    return result;
-}
-
 extern "C" JNIEXPORT jlongArray JNICALL
 Java_com_peerlink_app_tunnel_NativePeerLinkBackend_nativePollStats(
         JNIEnv *env, jobject /*thiz*/, jlong handle) {
     BackendState *state = from_handle(handle);
-    jlongArray result = env->NewLongArray(12);
+    jlongArray result = env->NewLongArray(14);
     if (result == nullptr) return nullptr;
-    const jlong values[12] = {
+    const jlong values[14] = {
         state ? static_cast<jlong>(state->stats.tunnel_out_packets.load(std::memory_order_relaxed)) : 0,
         state ? static_cast<jlong>(state->stats.tunnel_out_bytes.load(std::memory_order_relaxed)) : 0,
         state ? static_cast<jlong>(state->stats.tunnel_in_packets.load(std::memory_order_relaxed)) : 0,
@@ -4236,8 +4017,10 @@ Java_com_peerlink_app_tunnel_NativePeerLinkBackend_nativePollStats(
         state ? static_cast<jlong>(state->stats.dropped_packets.load(std::memory_order_relaxed)) : 0,
         state ? static_cast<jlong>(state->stats.keepalive_tx.load(std::memory_order_relaxed)) : 0,
         state ? static_cast<jlong>(state->stats.keepalive_rx.load(std::memory_order_relaxed)) : 0,
+        state ? static_cast<jlong>(state->stats.small_game_packets.load(std::memory_order_relaxed)) : 0,
+        state ? static_cast<jlong>(state->stats.small_game_last_ms.load(std::memory_order_relaxed)) : 0,
         state && state->running.load(std::memory_order_acquire) ? 1 : 0,
     };
-    env->SetLongArrayRegion(result, 0, 12, values);
+    env->SetLongArrayRegion(result, 0, 14, values);
     return result;
 }

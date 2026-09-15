@@ -2,15 +2,9 @@ package com.peerlink.app.tunnel
 
 import androidx.annotation.Keep
 import com.peerlink.app.core.AppState
-import com.peerlink.app.core.MatchTracker
-import com.peerlink.app.core.NativePacketEvent
-import com.peerlink.app.core.NativeTelemetrySample
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.locks.ReentrantReadWriteLock
 import kotlin.concurrent.read
 import kotlin.concurrent.write
@@ -50,13 +44,8 @@ class NativePeerLinkBackend(
     private var nativeHandle: Long = 0L
     @Volatile private var stopping = false
     private val pollingLock = Any()
-    private val telemetryLock = Any()
     private val nativeCallbacks = NativeCallbacks()
     private var statsExecutor: ScheduledExecutorService? = null
-    private val telemetryParseFailures = AtomicLong(0L)
-    private var lastTelemetryOrdinal = 0L
-    private var lastTelemetryHeader = LongArray(9)
-    private var hasTelemetryHeader = false
 
     @Volatile
     var latestStats: NativeBackendStats = NativeBackendStats.EMPTY
@@ -88,10 +77,6 @@ class NativePeerLinkBackend(
         nativeHandle = startResult[0]
         stopping = false
         latestStats = NativeBackendStats.EMPTY
-        telemetryParseFailures.set(0L)
-        lastTelemetryOrdinal = 0L
-        lastTelemetryHeader = LongArray(9)
-        hasTelemetryHeader = false
         return@write startResult[1].toInt()
     }
 
@@ -124,121 +109,6 @@ class NativePeerLinkBackend(
         latestStats = stats
         return@read stats
     }
-
-    /**
-     * Drains the versioned PMT2 native rings. A malformed/truncated poll is
-     * returned as an integrity failure, never silently accepted or allowed to
-     * affect packet forwarding.
-     */
-    fun pollMatchTelemetry(): NativeTelemetrySample? = handleLock.read {
-        synchronized(telemetryLock) {
-            val handle = nativeHandle
-            if (handle == 0L) return@read null
-            val raw = runCatching { nativePollMatchTelemetry(handle) }.getOrElse {
-                return@read failedTelemetryPoll()
-            }
-            decodeMatchTelemetry(raw) ?: failedTelemetryPoll()
-        }
-    }
-
-    /**
-     * Stop the only periodic consumer, wait for it to leave the native drain,
-     * then consume the final events exactly once before nativeStop().
-     */
-    fun drainFinalMatchTelemetry(): NativeTelemetrySample? {
-        stopStatsPolling(waitForTermination = true)
-        return handleLock.write { pollMatchTelemetry() }
-    }
-
-    private fun failedTelemetryPoll(): NativeTelemetrySample = NativeTelemetrySample(
-        telemetryParseFailures = telemetryParseFailures.incrementAndGet(),
-    )
-
-    private fun decodeMatchTelemetry(raw: ByteArray): NativeTelemetrySample? = runCatching {
-        if (raw.size < MATCH_HEADER_SIZE) return null
-        val buffer = ByteBuffer.wrap(raw).order(ByteOrder.LITTLE_ENDIAN)
-        if (buffer.int != MATCH_MAGIC) return null
-        val version = buffer.short.toInt() and 0xFFFF
-        val headerSize = buffer.short.toInt() and 0xFFFF
-        val eventSize = buffer.short.toInt() and 0xFFFF
-        val count = buffer.short.toInt() and 0xFFFF
-        buffer.int // flags/reserved
-        if (version != MATCH_VERSION || headerSize != MATCH_HEADER_SIZE || eventSize != MATCH_EVENT_SIZE) return null
-        val expectedSize = headerSize.toLong() + count.toLong() * eventSize.toLong()
-        if (expectedSize != raw.size.toLong() || count > MATCH_MAX_EVENTS_PER_POLL) return null
-
-        val gameOut = buffer.long
-        val gameIn = buffer.long
-        val outBytes = buffer.long
-        val inBytes = buffer.long
-        val lastOut = buffer.long
-        val lastIn = buffer.long
-        val firstTraffic = buffer.long
-        val nativeNow = buffer.long
-        val dropped = buffer.long
-        val tunGaps1s = buffer.long
-        val tunGapLastMs = buffer.long
-        val rxGaps1s = buffer.long
-        val rxGapLastMs = buffer.long
-        if (listOf(gameOut, gameIn, outBytes, inBytes, lastOut, lastIn, firstTraffic, nativeNow, dropped,
-                   tunGaps1s, tunGapLastMs, rxGaps1s, rxGapLastMs).any { it < 0L }) return null
-
-        val headerValues = longArrayOf(
-            gameOut, gameIn, outBytes, inBytes, lastOut, lastIn,
-            firstTraffic, nativeNow, dropped,
-            tunGaps1s, tunGapLastMs, rxGaps1s, rxGapLastMs,
-        )
-        if (hasTelemetryHeader && headerValues.indices.any {
-                headerValues[it] < lastTelemetryHeader[it]
-            }) return null
-
-        val events = ArrayList<NativePacketEvent>(count)
-        var previousOrdinal = lastTelemetryOrdinal
-        repeat(count) {
-            val ordinal = buffer.long
-            val timestamp = buffer.long
-            val direction = buffer.get().toInt() and 0xFF
-            val payloadLength = buffer.short.toInt() and 0xFFFF
-            val headLength = buffer.get().toInt() and 0xFF
-            val head = ByteArray(MATCH_HEAD_SIZE)
-            buffer.get(head)
-            val sourcePort = buffer.short.toInt() and 0xFFFF
-            val destPort = buffer.short.toInt() and 0xFFFF
-            if (ordinal <= previousOrdinal || timestamp < 0L || direction !in 0..1 ||
-                headLength > MATCH_HEAD_SIZE || headLength > payloadLength) return null
-            previousOrdinal = ordinal
-            events += NativePacketEvent(
-                ordinal = ordinal,
-                tsMs = timestamp,
-                sentByMe = direction == 0,
-                payloadLen = payloadLength,
-                headLen = headLength,
-                head = head,
-                sport = sourcePort,
-                dport = destPort,
-            )
-        }
-        lastTelemetryOrdinal = previousOrdinal
-        lastTelemetryHeader = headerValues
-        hasTelemetryHeader = true
-        NativeTelemetrySample(
-            gameOutPackets = gameOut,
-            gameInPackets = gameIn,
-            gameOutBytes = outBytes,
-            gameInBytes = inBytes,
-            lastOutMs = lastOut,
-            lastInMs = lastIn,
-            firstTrafficMs = firstTraffic,
-            nativeNowMs = nativeNow,
-            droppedSnapshots = dropped,
-            tunGaps1s = tunGaps1s,
-            tunGapLastMs = tunGapLastMs,
-            rxGaps1s = rxGaps1s,
-            rxGapLastMs = rxGapLastMs,
-            telemetryParseFailures = telemetryParseFailures.get(),
-            events = events,
-        )
-    }.getOrNull()
 
     /**
      * Flushes the asynchronous PCAPNG writer without stopping forwarding.
@@ -299,9 +169,6 @@ class NativePeerLinkBackend(
                             AppState.tunneled.set(stats.totalTunneledPackets)
                             callbacks.onStats(stats)
                         }
-                        pollMatchTelemetry()?.let { sample ->
-                            runCatching { MatchTracker.onTelemetry(sample) }
-                        }
                     }
                 },
                 1L,
@@ -347,18 +214,11 @@ class NativePeerLinkBackend(
     private external fun nativeRebindPeerSocket(handle: Long): Boolean
     private external fun nativeGetHotThreadTids(handle: Long): IntArray
     private external fun nativeVerifyPeerPath(handle: Long, timeoutMs: Int): Boolean
-    private external fun nativePollMatchTelemetry(handle: Long): ByteArray
 
     companion object {
         const val LOG_LEVEL_INFO = 1
         const val LOG_LEVEL_WARN = 2
         const val LOG_LEVEL_ERROR = 3
-        private const val MATCH_MAGIC = 0x32544D50
-        private const val MATCH_VERSION = 4
-        private const val MATCH_HEADER_SIZE = 120
-        private const val MATCH_EVENT_SIZE = 84
-        private const val MATCH_HEAD_SIZE = 60
-        private const val MATCH_MAX_EVENTS_PER_POLL = 4096
 
         init {
             System.loadLibrary("peerlinkbackend")

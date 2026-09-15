@@ -422,7 +422,7 @@ private fun MainPage(
                 PeerRow(peer, false, onTap = { onTapPeer(peer) })
             }
         }
-        if (liveMatch.phase == MatchPhase.STARTING || liveMatch.phase == MatchPhase.LIVE || liveMatch.phase == MatchPhase.ENDING) {
+        if (liveMatch.phase == MatchPhase.LIVE) {
             item(key = "match") { LiveScoreStrip(liveMatch) }
         }
         item(key = "prime") {
@@ -779,9 +779,8 @@ private data class Tool(val key: String, val label: String, val icon: ImageVecto
                             overflow = TextOverflow.Ellipsis,
                         )
                     }
-                    val unresolved = match.totalGoals > match.myGoals + match.opponentGoals
                     Text(
-                        if (unresolved) "${match.totalGoals}g?" else "${match.myGoals} – ${match.opponentGoals}",
+                        "${match.myGoals} – ${match.opponentGoals}",
                         fontSize = 18.sp, fontWeight = FontWeight.ExtraBold, color = PL.ink,
                     )
                     Spacer(Modifier.width(10.dp))
@@ -794,7 +793,7 @@ private data class Tool(val key: String, val label: String, val icon: ImageVecto
                 }
             }
         }
-        Text("Only matches with a proven end, complete telemetry, bidirectional traffic and peer-confirmed goal events can change this balance.", fontSize = 12.sp, color = PL.inkSoft, lineHeight = 18.sp, modifier = Modifier.padding(4.dp))
+        Text("Only matches verified from the eFootball final result screen can change this balance.", fontSize = 12.sp, color = PL.inkSoft, lineHeight = 18.sp, modifier = Modifier.padding(4.dp))
     }
 }
 
@@ -823,19 +822,13 @@ private data class Tool(val key: String, val label: String, val icon: ImageVecto
         Text(
             when (state.phase) {
                 MatchPhase.LIVE -> "LIVE"
-                MatchPhase.ENDING -> "FULL TIME"
                 MatchPhase.SEALED -> "SEALED"
-                else -> "VERIFYING"
+                else -> "WAITING"
             },
             fontSize = 9.sp, fontWeight = FontWeight.ExtraBold, color = PL.green
         )
         Spacer(Modifier.weight(1f))
-        val unresolved = state.totalGoals > state.myGoals + state.opponentGoals
-        val score = if (unresolved) {
-            "${state.totalGoals} goal(s) — scorer pending"
-        } else {
-            "You ${state.myGoals} – ${state.opponentGoals}"
-        }
+        val score = "You ${state.myGoals} – ${state.opponentGoals}"
         Text("$score ${state.opponentName.ifBlank { "Opponent" }}", fontSize = 13.sp, fontWeight = FontWeight.ExtraBold, color = PL.ink, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }

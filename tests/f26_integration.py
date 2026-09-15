@@ -41,7 +41,8 @@ for label, source in [('header',header), ('implementation',cpp)]:
 check('local and peer ports have separate JNI arguments', 'peerPort = config.peerPort' in backend and 'localPort = config.localPort' in backend)
 models = (JAVA / 'tunnel/NativeBackendModels.kt').read_text()
 check('native liveness crosses the JNI array and triggers service cleanup',
-      'NewLongArray(12)' in cpp and 'backendRunning = raw[11] != 0L' in models and
+      'NewLongArray(14)' in cpp and 'backendRunning = raw[13] != 0L' in models and
+      'smallGamePackets = raw[11]' in models and 'smallGameLastMs = raw[12]' in models and
       '!stats.backendRunning' in body(service, 'override fun onStats(') and
       'stopVpn()' in body(service, 'override fun onStats('))
 monitor = body(service, 'private fun startGameplayPathMonitor()')

@@ -57,12 +57,12 @@ int main() {
         s->running = true;
         s->stats.tunnel_out_packets = 42;
         Java_com_peerlink_app_tunnel_NativePeerLinkBackend_nativePollStats(&env, nullptr, handle);
-        check("native liveness follows existing statistics in JNI array", env.result_longs.size() == 12 && env.result_longs[0] == 42 && env.result_longs[11] == 1);
+        check("native liveness follows existing statistics in JNI array", env.result_longs.size() == 14 && env.result_longs[0] == 42 && env.result_longs[13] == 1);
         request_backend_stop(s.get());
         Java_com_peerlink_app_tunnel_NativePeerLinkBackend_nativePollStats(&env, nullptr, handle);
-        check("fatal cancellation is visible to the VPN service", env.result_longs[0] == 42 && env.result_longs[11] == 0);
+        check("fatal cancellation is visible to the VPN service", env.result_longs[0] == 42 && env.result_longs[13] == 0);
         Java_com_peerlink_app_tunnel_NativePeerLinkBackend_nativePollStats(&env, nullptr, 0);
-        check("absent backend cannot report a live connection", env.result_longs[11] == 0);
+        check("absent backend cannot report a live connection", env.result_longs[13] == 0);
     }
     {
         LocalUdp peer;

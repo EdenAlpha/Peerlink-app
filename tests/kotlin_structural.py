@@ -138,12 +138,18 @@ def main() -> int:
 
     combined = "\n".join(all_sources.values())
     required = (
-        "MatchProtocolReader", "MatchTracker", "NativeTelemetrySample",
-        "drainFinalMatchTelemetry", "rememberVerifiedGameplayPath",
-        "protocolDecodeDrops", "FULL_TIME_CONTROL_LEN",
+        "MatchTracker", "PrimeScreenScoreDetector", "ScoreLaneReader",
+        "MatchAutomationEngine", "rememberVerifiedGameplayPath",
+        "smallGamePackets", "CaptureMode",
     )
     for symbol in required:
-        check(f"F10 integration symbol present: {symbol}", symbol in combined)
+        check(f"F32 integration symbol present: {symbol}", symbol in combined)
+    for symbol in (
+        "MatchProtocolReader", "NativeTelemetrySample", "NativePacketEvent",
+        "drainFinalMatchTelemetry", "pollMatchTelemetry",
+        "FULL_TIME_CONTROL_LEN", "MatchCalibration",
+    ):
+        check(f"F32 removed symbol absent: {symbol}", symbol not in combined)
     check("no continuous Wi-Fi scan call remains", ".startScan(" not in combined)
     check("no conflict markers remain", not re.search(r"(?m)^(<<<<<<<|=======|>>>>>>>)", combined))
 

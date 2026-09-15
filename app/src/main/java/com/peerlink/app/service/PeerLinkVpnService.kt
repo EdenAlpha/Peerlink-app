@@ -462,6 +462,7 @@ class PeerLinkVpnService : VpnService() {
 
                     override fun onStats(stats: NativeBackendStats) {
                         AppState.tunneled.set(stats.totalTunneledPackets)
+                        MatchTracker.noteTunnelStats(stats.tunnelOutPackets, stats.tunnelInPackets)
                         MatchAutomationEngine.onNativeStats(stats)
                         if (!stats.backendRunning && !stopVpnGuard.get()) {
                             AppState.sessionError.set("The packet connection stopped. Reconnect to your player.")
@@ -507,15 +508,16 @@ class PeerLinkVpnService : VpnService() {
             AppState.isRunning.set(true)
             AppState.sessionPhase.set(PeerSessionPhase.ACTIVE)
 
-            // Drain pre-session probe telemetry and use its cumulative counters
-            // as the baseline. Periodic polling starts only after MatchTracker
-            // is ready, so no first-match packet can disappear in that gap.
-            val matchBaseline = nativeBackend!!.pollMatchTelemetry()
+            // Drain pre-session stats so the tracker's ledger records cite
+            // real cumulative counters from the first poll onward.
+            MatchTracker.noteTunnelStats(
+                nativeBackend!!.latestStats.tunnelOutPackets,
+                nativeBackend!!.latestStats.tunnelInPackets,
+            )
             MatchTracker.beginSession(
                 context = applicationContext,
                 opponentName = AppState.connectedPeerName.ifBlank { "Opponent" },
                 opponentIp = AppState.connectedPeerIp,
-                baseline = matchBaseline,
             )
             MatchAutomationEngine.start(applicationContext)
             nativeBackend!!.startPolling()
@@ -947,11 +949,7 @@ class PeerLinkVpnService : VpnService() {
                 "[F24-TRACE ] UDP timing metadata cached chars=${lastNativeUdpTraceDump.length}; raw packet bytes=off"
             )
 
-            // Drain the last native snapshots before the handle is closed. A
-            // teardown itself is never treated as full time by MatchTracker.
-            runCatching {
-                backend?.drainFinalMatchTelemetry()?.let { MatchTracker.onTelemetry(it) }
-            }
+            // A teardown itself is never treated as full time by MatchTracker.
             runCatching { MatchTracker.endSession("disconnect") }
 
             try {

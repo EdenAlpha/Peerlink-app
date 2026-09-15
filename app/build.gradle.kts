@@ -17,8 +17,8 @@ android {
         applicationId = "com.peerlink.app"
         minSdk = 26
         targetSdk = 36
-        versionCode = 11
-        versionName = "5.0.7-f31"
+        versionCode = 12
+        versionName = "5.0.8-f32"
         // User-facing name, kept separate from applicationId so existing installs keep their data.
         resValue("string", "app_displayed_name", "PeerLink")
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"

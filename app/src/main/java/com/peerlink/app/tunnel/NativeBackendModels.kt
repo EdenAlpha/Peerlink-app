@@ -32,15 +32,24 @@ data class NativeBackendStats(
     val droppedPackets: Long,
     val keepaliveTx: Long,
     val keepaliveRx: Long,
+    /**
+     * F32 end-of-match signal: count of small (<55B) game payloads and the
+     * monotonic-ms of the most recent one. Across every real capture the
+     * uniform 54B tail appears ONLY in the final seconds before the game's
+     * tick stream collapses; ordinary gameplay (goals, half-time, replays,
+     * transient dips down to 17pps) never produces sub-55B payloads.
+     */
+    val smallGamePackets: Long = 0L,
+    val smallGameLastMs: Long = 0L,
     val backendRunning: Boolean = false,
 ) {
     val totalTunneledPackets: Long get() = tunnelOutPackets + tunnelInPackets
 
     companion object {
-        val EMPTY = NativeBackendStats(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+        val EMPTY = NativeBackendStats(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
 
         fun fromRaw(raw: LongArray?): NativeBackendStats {
-            if (raw == null || raw.size < 12) return EMPTY
+            if (raw == null || raw.size < 14) return EMPTY
             return NativeBackendStats(
                 tunnelOutPackets = raw[0],
                 tunnelOutBytes = raw[1],
@@ -53,7 +62,9 @@ data class NativeBackendStats(
                 droppedPackets = raw[8],
                 keepaliveTx = raw[9],
                 keepaliveRx = raw[10],
-                backendRunning = raw[11] != 0L,
+                smallGamePackets = raw[11],
+                smallGameLastMs = raw[12],
+                backendRunning = raw[13] != 0L,
             )
         }
     }

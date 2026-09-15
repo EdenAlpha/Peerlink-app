@@ -293,63 +293,19 @@ int main() {
     }
     {
         auto s = fresh();
+        // F32 small-packet signal: the only per-packet end-of-match marker.
+        // Real captures showed sub-55B game payloads ONLY in the final FT tail.
         std::array<uint8_t, 2048> payload{};
         for (size_t i = 0; i < payload.size(); ++i) payload[i] = static_cast<uint8_t>(i & 0xFFu);
-        // Custom-STUN identity frame (magic cookie at payload 4..8).
-        std::array<uint8_t, 64> stun_frame{};
-        stun_frame[0] = 0x08; stun_frame[1] = 0x0A;
-        stun_frame[4] = 0x21; stun_frame[5] = 0x12; stun_frame[6] = 0xA4; stun_frame[7] = 0x42;
-        // Non-snapshots under F15: len 60 (not a keystream class), len 45,
-        // len 2500 (beyond the goal-candidate range).
-        record_match_telemetry(s.get(), true, payload.data(), 60, 100, 51000, 52000);
-        record_match_telemetry(s.get(), true, payload.data(), 45, 101, 51000, 52000);
-        record_match_telemetry(s.get(), true, payload.data(), 2500, 102, 51000, 52000);
-        // Keystream classes + full-time control (outgoing).
-        record_match_telemetry(s.get(), true, payload.data(), 26, 103, 51000, 52000);
-        record_match_telemetry(s.get(), true, payload.data(), 59, 104, 51000, 52000);
-        record_match_telemetry(s.get(), true, payload.data(), 39, 105, 51000, 52000);
-        record_match_telemetry(s.get(), true, payload.data(), 63, 106, 51000, 52000);
-        // Goal candidate + STUN identity frame (incoming).
-        record_match_telemetry(s.get(), false, payload.data(), 400, 107, 52000, 51000);
-        record_match_telemetry(s.get(), false, stun_frame.data(), stun_frame.size(), 108, 52000, 51000);
-        check("match counters cover every game packet",
-              s->telemetry.game_out_packets == 7 && s->telemetry.game_in_packets == 2);
-        check("score telemetry filters irrelevant payload sizes",
-              s->telemetry.outgoing.write_index == 4 && s->telemetry.incoming.write_index == 2);
-        const auto &full_time = s->telemetry.outgoing.slots[0];
-        const auto &steady59 = s->telemetry.outgoing.slots[1];
-        const auto &steady39 = s->telemetry.outgoing.slots[2];
-        const auto &steady63 = s->telemetry.outgoing.slots[3];
-        const auto &event = s->telemetry.incoming.slots[0];
-        const auto &stun = s->telemetry.incoming.slots[1];
-        check("full-time control packets are retained for settlement proof",
-              full_time.direction == 0 && full_time.payload_len == 26 && full_time.head_len == 26);
-        check("keystream classes are retained with full heads",
-              steady59.payload_len == 59 && steady59.head_len == 59 &&
-              steady39.payload_len == 39 && steady39.head_len == 39 &&
-              steady63.payload_len == 63 && steady63.head_len == 60);
-        check("filtered telemetry preserves direction length and 60-byte head",
-              event.direction == 1 && event.payload_len == 400 && event.head_len == 60 &&
-              event.head[59] == payload[59]);
-        check("custom-STUN identity frames are snapshotted",
-              stun.direction == 1 && stun.payload_len == 64 && stun.head_len == 60 &&
-              stun.head[4] == 0x21 && stun.head[7] == 0x42);
-        check("telemetry v4 carries the game-flow ports per event",
-              full_time.sport == 51000 && full_time.dport == 52000 &&
-              event.sport == 52000 && event.dport == 51000);
-        check("telemetry event size matches the serialized layout (84 bytes, 60B head)",
-              kMatchTelemetryVersion == 4 && kMatchTelemetryEventSize == 84 &&
-              kMatchHeadCaptureMax == 60);
-    }
-    {
-        auto s = fresh();
-        std::array<uint8_t, 59> payload{};
-        for (size_t i = 0; i <= kMatchEventRingCapacity; ++i) {
-            record_match_telemetry(s.get(), true, payload.data(), payload.size(), 1000 + i, 0, 0);
-        }
-        check("full score ring drops snapshots instead of blocking gameplay",
-              s->telemetry.outgoing.write_index == kMatchEventRingCapacity &&
-              s->telemetry.dropped_snapshots == 1);
+        record_match_packet_signal(s.get(), 54, 100);
+        record_match_packet_signal(s.get(), 54, 150);
+        record_match_packet_signal(s.get(), 91, 200);   // normal gameplay size: ignored
+        record_match_packet_signal(s.get(), 55, 250);   // boundary: 55 is NOT small
+        record_match_packet_signal(s.get(), 39, 300);   // small but non-tail class: still counted
+        check("small-packet counter counts sub-55B game payloads only",
+              s->stats.small_game_packets == 3);
+        check("small-packet last-seen tracks the most recent sub-55B payload",
+              s->stats.small_game_last_ms == 300);
     }
     {
         auto s = fresh();

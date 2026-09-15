@@ -13,9 +13,9 @@ import java.nio.file.StandardCopyOption
 enum class MatchResult { WIN, LOSS, DRAW }
 
 /**
- * A goal as recorded in the audit ledger. The wire fields are the calibration
- * inputs: until a both-players-score capture pins the side encoding,
- * [scorerSide] is UNRESOLVED and the goal pays nothing.
+ * A goal as recorded in the legacy audit ledger (F13-F31 packet-decode era).
+ * F32 removed packet goal detection: new records always carry an empty goal
+ * list. The structure is retained so existing ledger files keep loading.
  */
 data class GoalEvent(
     val atMs: Long,
@@ -37,45 +37,6 @@ data class GoalEvent(
         const val SIDE_UNRESOLVED = "UNRESOLVED"
         const val SIDE_ME = "ME"
         const val SIDE_PEER = "PEER"
-
-        fun fromReader(event: MatchProtocolReader.GoalEvent): GoalEvent = GoalEvent(
-            atMs = event.tMs,
-            payloadLen = event.payloadLen,
-            firstSentByMe = event.firstSentByMe,
-            senderRole = event.senderRole,
-            corroborated = event.corroborated,
-            scoreByteA = event.fields?.scoreByteA ?: -1,
-            scoreByteB = event.fields?.scoreByteB ?: -1,
-            tagByteA = event.fields?.tagByteA ?: -1,
-            tagByteB = event.fields?.tagByteB ?: -1,
-            postTailHex = event.fields?.postTail?.joinToString("") { "%02x".format(it) } ?: "",
-            vGroupHex = event.fields?.vGroup?.joinToString("") { "%02x".format(it) } ?: "",
-            scorerSide = when (event.scorerSide) {
-                MatchProtocolReader.ScorerSide.ME -> SIDE_ME
-                MatchProtocolReader.ScorerSide.PEER -> SIDE_PEER
-                MatchProtocolReader.ScorerSide.UNRESOLVED -> SIDE_UNRESOLVED
-            },
-            attributionTier = event.attribution.name,
-            reason = event.reason,
-        )
-    }
-}
-
-/**
- * Holder for the per-goal scorer calibration. Ships EMPTY: no calibration is
- * bundled with the app, so every goal stays UNRESOLVED and PeerCoin
- * settlement is blocked. A calibration is only added after a real capture of
- * a match in which both players score has been diffed and replay-validated.
- */
-object MatchCalibration {
-    @Volatile
-    private var calibration: MatchProtocolReader.AttributionCalibration? = null
-
-    val loaded: MatchProtocolReader.AttributionCalibration? get() = calibration
-
-    /** Replaces the calibration; only call from validated tooling/tests. */
-    fun setForCalibration(value: MatchProtocolReader.AttributionCalibration?) {
-        calibration = value
     }
 }
 
