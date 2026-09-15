@@ -180,6 +180,7 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
         var detectTopology = false
         var resolveDisconnect = false
         var resetRematch = false
+        var startProducer = false
         var logT0: String? = null
         var logCapture: String? = null
 
@@ -258,7 +259,6 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
             }
 
             val mode = captureMode
-            var startProducer = false
             when (mode) {
                 null -> {
                     // Idle: waiting for an end-of-match signal.
