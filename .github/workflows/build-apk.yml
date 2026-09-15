@@ -38,10 +38,8 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
-      - uses: android-actions/setup-android@v3
-
       - name: Install Android build components
-        run: sdkmanager 'platforms;android-36' 'build-tools;35.0.0' 'cmake;3.22.1' 'ndk;27.0.12077973'
+        run: yes | sdkmanager 'platforms;android-36' 'build-tools;35.0.0' 'cmake;3.22.1' 'ndk;27.0.12077973' >/dev/null
 
       - name: Compile app and run Kotlin unit tests
         run: bash gradlew --no-daemon :app:testDebugUnitTest :app:assembleDebug --stacktrace
