@@ -33,7 +33,7 @@ jobs:
 
       - name: Install Android SDK components
         run: |
-          yes | sdkmanager "platforms;android-36" "build-tools;35.0.0" "platform-tools" >/dev/null
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "build-tools;35.0.0" "platform-tools" >/dev/null
 
       - name: Build APK
         run: ./gradlew assembleDebug --stacktrace
