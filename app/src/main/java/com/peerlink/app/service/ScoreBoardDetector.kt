@@ -740,7 +740,7 @@ internal object ScoreBoardDetector {
         val cands = ArrayList<Cand>()
         val extraBlobs = ArrayList<Box>()
         for (b in comps) {
-            if (b.h < max(12, 0.012f * H) || b.h > 0.15f * H) continue
+            if (b.h < max(12, (0.012f * H).toInt()) || b.h > 0.15f * H) continue
             if (b.w > 0.90f * W) continue
             val asp = b.w.toFloat() / b.h
             if (asp < 0.55f || asp > 2.8f) {
@@ -758,7 +758,7 @@ internal object ScoreBoardDetector {
         }
         for (blob in extraBlobs) {
             for (b in blobSubBoxes(m, blob)) {
-                if (b.h < max(12, 0.012f * H) || b.h > 0.15f * H || b.w > 0.90f * W) continue
+                if (b.h < max(12, (0.012f * H).toInt()) || b.h > 0.15f * H || b.w > 0.90f * W) continue
                 val asp = b.w.toFloat() / b.h
                 if (asp < 0.55f || asp > 2.8f || b.area.toFloat() / (b.w * b.h) < 0.52f) continue
                 val ev = boxDigitEvidence(m, b)
@@ -798,7 +798,7 @@ internal object ScoreBoardDetector {
         var inkN = 0
         for (v in ink) if (v) inkN++
         if (inkN < 10) return null
-        var comps = components(ink, ww, hh, 5)
+        var comps: List<Box> = components(ink, ww, hh, 5)
         comps = mergeFragments(comps, max(2, (0.20f * box.h).toInt()), box.w, box.h)
         comps = comps.filter { it.h >= 0.25f * box.h }
         if (comps.isEmpty()) return null
@@ -938,9 +938,9 @@ internal object ScoreBoardDetector {
         val yTop = stripBottom + max(2, (0.12f * boxH).toInt())
         if (yTop >= H - 4) return null
         val minArea = max(6, (0.000008f * W * H).toInt())
-        var comps = componentsOffset(m.loose, m.w, yTop, H, minArea)
+        var comps: List<Box> = componentsOffset(m.loose, m.w, yTop, H, minArea)
         val hlo = 0.18f * boxH; val hhi = 0.90f * boxH
-        comps = comps.filter { it.h in hlo..hhi && it.w <= 1.2f * boxW }
+        comps = comps.filter { it.h.toFloat() in hlo..hhi && it.w <= 1.2f * boxW }
         if (comps.size < 8) return null
         val medH = comps.map { it.h.toFloat() }.sorted()[comps.size / 2]
         val rowGap = max(3, (0.70f * medH).toInt())
@@ -1246,7 +1246,10 @@ internal object ScoreBoardDetector {
                 if (target != null) {
                     val t = target.first
                     val nb = Box(min(t.x0, c.x0), min(t.y0, c.y0), max(t.x1, c.x1), max(t.y1, c.y1), t.area + c.area)
-                    out[out.indexOf(target)] = nb to (target.second + cur.second)
+                    out[out.indexOf(target)] = nb to ArrayList<Box>().apply {
+                        addAll(target.second)
+                        addAll(cur.second)
+                    }
                     changed = true
                 } else {
                     out.add(cur)
@@ -1459,7 +1462,7 @@ internal object ScoreBoardDetector {
             var sc = (if (union > 0) inter.toFloat() / union else 0f) * t.weight
             if (holes !in (digitHoles[t.digit] ?: emptySet())) sc *= 0.35f
             val (lo, hi) = digitAspect[t.digit] ?: (0f to 1f)
-            if (aspect < lo - 0.15f || aspect > hi + 0.15f) sc *= 0.6f
+            if (norm.aspect < lo - 0.15f || norm.aspect > hi + 0.15f) sc *= 0.6f
             if (sc > (perDigit[t.digit] ?: -1f)) perDigit[t.digit] = sc
         }
         val ranked = perDigit.entries.sortedByDescending { it.value }
@@ -1469,6 +1472,4 @@ internal object ScoreBoardDetector {
         if (best < 0.45f || margin < 0.02f) return GlyphRead(null, best, margin)
         return GlyphRead(bd, best, margin)
     }
-
-    private fun Float.pow(p: Float): Float = kotlin.math.pow(this, p)
 }

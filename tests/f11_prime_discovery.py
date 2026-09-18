@@ -106,7 +106,7 @@ check("Prime uses a per-install authentication token",
       "SecureRandom" in prime_auth and 'put("token", token)' in prime_client)
 check("Token reaches the app_process server", "--token=" in starter and "--token" in starter_cpp)
 check("Prime server health protocol remains versioned and authenticated",
-      "prime_ok_v5" in prime_server and "version in 2..5" in prime_client and
+      "prime_ok_v6" in prime_server and "version in 2..6" in prime_client and
       "constantTimeEquals(authToken, suppliedToken)" in prime_server)
 check("Prime request input is bounded", "MAX_REQUEST_BYTES" in prime_server and "readUtf8LineLimited" in prime_server)
 check("Prime command output is bounded", "MAX_OUTPUT_BYTES" in prime_server and "readProcessOutputLimited" in prime_server)

@@ -25,17 +25,23 @@ import os
 import re
 import sys
 
-import numpy as np
-from PIL import Image
-
-sys.path.insert(0, '/home/z/my-project/scripts')
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'f34_reference'))
-import prototype as P
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SRC_KT = os.path.join(ROOT, 'app/src/main/java/com/peerlink/app/service/ScoreBoardDetector.kt')
 SRC_PY = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'f34_reference/prototype.py')
-IMG = os.environ.get('F34_CAPTURES', '/home/z/my-project/work/f32/PeerLink-F32')
+IMG = os.environ.get('F34_CAPTURES', ROOT)
+
+try:
+    import numpy as np
+    from PIL import Image
+    import prototype as P
+    HAS_CALIB_DEPS = True
+except ImportError:
+    np = None
+    Image = None
+    P = None
+    HAS_CALIB_DEPS = False
 
 GROUND_TRUTH = {
     "Screenshot_20260905-010207.png": ("WALKING", (0, 1), None, None),
@@ -178,9 +184,13 @@ def check_kotlin_sync():
 def main():
     print("== F34 structural + calibration regression ==")
     check_structure()
-    check_bank()
-    check_calibration()
     check_kotlin_sync()
+    have_images = all(os.path.isfile(os.path.join(IMG, name)) for name in GROUND_TRUTH)
+    if HAS_CALIB_DEPS and have_images:
+        check_bank()
+        check_calibration()
+    else:
+        print("C. calibration skipped (numpy/Pillow/scipy or capture images not available)")
     print(f"\n{'ALL PASS' if not fails else f'{len(fails)} FAILURES'}")
     for f in fails:
         print(" -", f)

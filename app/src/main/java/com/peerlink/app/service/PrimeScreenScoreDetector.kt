@@ -48,7 +48,7 @@ object PrimeScreenScoreDetector {
         val topHeight: Int,
         val gap: Int,
         val referenceHeight: Int,
-        val geometry: ScoreBoardDetector.Geometry,
+        internal val geometry: ScoreBoardDetector.Geometry,
     ) {
         fun recycle() {
             if (!bitmap.isRecycled) bitmap.recycle()
