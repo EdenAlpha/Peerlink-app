@@ -2,6 +2,7 @@ package com.peerlink.app.godmode
 
 import android.content.Context
 import android.content.Intent
+import com.peerlink.app.godmode.shizuku.PrimeShizukuAdbMdns
 import com.peerlink.app.godmode.shizuku.PrimeShizukuBootstrapEngine
 import android.content.pm.PackageManager
 import android.net.ConnectivityManager
@@ -106,7 +107,7 @@ object GodModeManager {
     private const val RESTORE_DELETE = "__DELETE__"
 
     private const val CONNECT_NSD_WAIT_MS = 20_000L
-    private const val SERVER_WAIT_MS      = 10_000L
+    private const val SERVER_WAIT_MS      = 30_000L
 
     // ─── Public state ─────────────────────────────────────────────────────
 
@@ -153,6 +154,7 @@ object GodModeManager {
     private lateinit var appContext: Context
 
     private var nsdWatcher: AdbNsdWatcher? = null
+    private var connectMdns: PrimeShizukuAdbMdns? = null
 
     @Volatile private var pairingHost: String? = null
     @Volatile private var pairingPort: Int     = 0
@@ -492,7 +494,7 @@ object GodModeManager {
         if (!guardianPulseRunning.compareAndSet(false, true)) return
         scope.launch {
             try {
-                if (PrimeClient.isAlive(timeoutMs = 650)) {
+                if (PrimeClient.isAlive(timeoutMs = 2_000)) {
                     AppState.primeServerAlive = true
                     _primeLinkState.value = PrimeLinkState.CONNECTED
                     updateSetupSnapshot(primeServerAlive = true)
@@ -504,20 +506,12 @@ object GodModeManager {
                 _primeLinkState.value = PrimeLinkState.DEGRADED
                 val now = System.currentTimeMillis()
                 if (now - lastGuardianRecoveryAttemptMs < guardianRecoveryCooldownMs) return@launch
-                // Shizuku only touches ADB while wireless debugging is actually
-                // advertising. Without an endpoint every connect attempt fails and
-                // (on OEMs like XOS) can trigger the wireless-debugging
-                // re-authorization prompt that kills the whole ADB session tree.
-                if (connectPort !in 1..65535) {
-                    AppState.appendLog("[PRIME-GUARD] Wireless debugging endpoint not visible — waiting, no ADB attempts")
-                    return@launch
-                }
                 lastGuardianRecoveryAttemptMs = now
                 _primeLinkState.value = PrimeLinkState.RECOVERING
                 AppState.appendLog("[PRIME-GUARD] PrimeServer heartbeat lost — automatic recovery starting")
 
                 commandGate.withPermit {
-                    if (!PrimeClient.isAlive(timeoutMs = 350)) {
+                    if (!PrimeClient.isAlive(timeoutMs = 2_000)) {
                         val recovered = ensurePrimeServerAlive(needBootstrap = false)
                         if (!recovered) {
                             // Shizuku posture: back off after a failed start so the
@@ -642,39 +636,43 @@ object GodModeManager {
      * Does NOT auto-connect via ADB — port is used by findAdbPort() only.
      */
     fun startWatching() {
-        if (nsdWatcher != null) return
+        if (nsdWatcher != null && connectMdns != null) return
         AppState.appendLog("[PRIME-MODE ] NSD watcher starting")
-        nsdWatcher = AdbNsdWatcher(appContext).apply {
-            onPairingPortFound = { host, port ->
-                pairingHost = host; pairingPort = port
-                AppState.appendLog("[PRIME-MODE ] Pairing port: $host:$port")
-                if (_state.value == State.DISCOVERING)
-                    setState(State.DISCOVERING, "Enter the 6-digit code shown in your notification")
+        if (nsdWatcher == null) {
+            nsdWatcher = AdbNsdWatcher(appContext).apply {
+                onPairingPortFound = { host, port ->
+                    pairingHost = host; pairingPort = port
+                    AppState.appendLog("[PRIME-MODE ] Pairing port: $host:$port")
+                    if (_state.value == State.DISCOVERING)
+                        setState(State.DISCOVERING, "Enter the 6-digit code shown in your notification")
+                }
+                onPairingPortLost = {
+                    pairingHost = null; pairingPort = 0
+                    AppState.appendLog("[PRIME-MODE ] Pairing service lost")
+                }
+                startPairingDiscovery()
             }
-            onPairingPortLost = {
-                pairingHost = null; pairingPort = 0
-                AppState.appendLog("[PRIME-MODE ] Pairing service lost")
-            }
-            onConnectPortFound = { host, port ->
-                connectHost = host; connectPort = port
-                _wirelessDebugOn.value = true
-                PrimeAdbKeepalive.onPortChanged(port)
-                AppState.appendLog("[PRIME-MODE ] Connect port cached: $host:$port")
-            }
-            onConnectPortLost = {
-                connectHost = null; connectPort = 0
-                _wirelessDebugOn.value = false
-                PrimeAdbKeepalive.onEndpointLost()
-                // mDNS loss is not proof that the detached PrimeServer died.
-                // The foreground guardian independently health-checks loopback.
-                AppState.appendLog("[PRIME-MODE ] Wireless-debugging advertisement lost; PrimeServer health checked separately")
-            }
-            start()
+        }
+        if (connectMdns == null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            connectMdns = PrimeShizukuAdbMdns(appContext, PrimeShizukuAdbMdns.TLS_CONNECT) { port ->
+                if (port in 1..65535) {
+                    connectHost = "127.0.0.1"
+                    connectPort = port
+                    _wirelessDebugOn.value = true
+                    AppState.appendLog("[PRIME-MODE ] Connect port cached: 127.0.0.1:$port")
+                } else {
+                    connectHost = null
+                    connectPort = 0
+                    _wirelessDebugOn.value = false
+                    AppState.appendLog("[PRIME-MODE ] Wireless-debugging advertisement lost; PrimeServer health checked separately")
+                }
+            }.also { it.start() }
         }
     }
 
     fun stopWatching() {
         nsdWatcher?.stop(); nsdWatcher = null
+        connectMdns?.stop(); connectMdns = null
         stopWifiMonitor()
         _primeWifiRetryState.value = null
         // FIX-A: Only reset to PAIRED_IDLE if we are genuinely waiting for NSD
@@ -1016,6 +1014,8 @@ object GodModeManager {
         setState(if (needBootstrap) State.BOOTSTRAPPING else State.CONNECTING,
             if (needBootstrap) "Completing one-time Prime setup…" else "Restoring Prime Mode connection…")
         AppState.appendLog("[PRIME-MODE ] ensurePrimeServerAlive: starting (needBootstrap=$needBootstrap)")
+        connectMdns?.stop()
+        connectMdns = null
 
         val result = PrimeShizukuBootstrapEngine(appContext).start(needBootstrap, connectPort) { stage ->
             _status.value = stage
@@ -1028,34 +1028,37 @@ object GodModeManager {
                 saveBootstrapStatus("PENDING: ${result.reason}")
                 updateSetupSnapshot(primeServerAlive = false)
                 setState(State.ERROR, result.reason)
+                startWatching()
                 return false
             }
             is PrimeShizukuBootstrapEngine.Result.Success -> {
-                AppState.appendLog("[PRIME-MODE ] Shizuku-style start sent via 127.0.0.1:${result.port}")
-
+                connectPort = result.port
+                connectHost = "127.0.0.1"
+                _wirelessDebugOn.value = true
+                AppState.appendLog("[PRIME-MODE ] start sent via 127.0.0.1:${result.port}")
             }
         }
 
         val deadline = android.os.SystemClock.elapsedRealtime() + SERVER_WAIT_MS
         while (android.os.SystemClock.elapsedRealtime() < deadline) {
-            if (PrimeClient.isAlive()) {
+            if (PrimeClient.isAlive(timeoutMs = 2_000)) {
                 AppState.appendLog("[PRIME-MODE ] PrimeServer alive ✅")
                 AppState.primeServerAlive = true
                 stopWifiMonitor()
                 _primeWifiRetryState.value = null
-                if (needBootstrap) markBootstrapped()
-                saveBootstrapStatus(if (needBootstrap) "COMPLETE — PrimeServer launched" else "RECOVERY — PrimeServer launched")
-                // The engine is detached, but XOS tears the whole ADB session
-                // tree down when the last mTLS client leaves. Park one quiet
-                // connection for as long as anything may need the engine.
-                if (connectPort in 1..65535) {
-                    runCatching { PrimeAdbKeepalive.ensure(appContext, connectPort) }
-                        .onFailure { AppState.appendLog("[PRIME-MODE ] ADB keepalive unavailable: ${it.message}") }
+                if (appContext.checkSelfPermission(android.Manifest.permission.WRITE_SECURE_SETTINGS) ==
+                    android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                    markBootstrapped()
+                } else if (needBootstrap) {
+                    markBootstrapped()
                 }
+                saveBootstrapStatus(if (needBootstrap) "COMPLETE — PrimeServer launched" else "RECOVERY — PrimeServer launched")
+                startWatching()
                 return true
             }
             delay(300L)
         }
+        startWatching()
 
         AppState.appendLog("[PRIME-MODE ] PrimeServer did not bind in ${SERVER_WAIT_MS / 1000}s")
         AppState.primeServerAlive = false

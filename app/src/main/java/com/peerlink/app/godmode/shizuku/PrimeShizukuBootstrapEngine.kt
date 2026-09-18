@@ -6,14 +6,14 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.provider.Settings
 import com.peerlink.app.godmode.AdbConnectClient
-import com.peerlink.app.godmode.AdbNsdWatcher
 import com.peerlink.app.godmode.PeerLinkAdbManager
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import java.net.ConnectException
+import javax.net.ssl.SSLProtocolException
 
 class PrimeShizukuBootstrapEngine(private val context: Context) {
     sealed class Result {
@@ -24,6 +24,7 @@ class PrimeShizukuBootstrapEngine(private val context: Context) {
     suspend fun start(
         needBootstrap: Boolean,
         cachedPort: Int = 0,
+        discoverTimeoutMs: Long = 12_000L,
         onStage: (String) -> Unit = {},
     ): Result = withContext(Dispatchers.IO) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
@@ -33,14 +34,6 @@ class PrimeShizukuBootstrapEngine(private val context: Context) {
         fun report(value: String) { stage = value; onStage(value) }
         try {
             withTimeoutOrNull(45_000L) {
-                // Photocopy of Shizuku BootCompleteReceiver.adbStart / AdbDialogFragment:
-                // when the settings permission is held, wake adbd with the exact
-                // triple Shizuku writes before every NSD-based launch. This is what
-                // made the pre-rewrite engine revive itself reliably on XOS.
-                // adb_wifi_enabled=1 makes adbd advertise the TLS connect service,
-                // ADB_ENABLED=1 keeps the USB daemon alive so the wireless daemon
-                // can re-attach without the OEM's re-authorization prompt, and
-                // adb_allowed_connection_time=0 removes the pairing window check.
                 if (context.checkSelfPermission(WRITE_SECURE_SETTINGS) ==
                     PackageManager.PERMISSION_GRANTED) {
                     runCatching {
@@ -51,63 +44,85 @@ class PrimeShizukuBootstrapEngine(private val context: Context) {
                     }
                 }
                 val ports = Channel<Int>(Channel.CONFLATED)
-                val discovery = AdbNsdWatcher(context).apply {
-                    onConnectPortFound = { _, port -> ports.trySend(port); Unit }
+                val adbMdns = PrimeShizukuAdbMdns(context, PrimeShizukuAdbMdns.TLS_CONNECT) { port ->
+                    if (port in 1..65535) ports.trySend(port)
                 }
                 report(stage)
-                discovery.startConnectDiscovery()
+                adbMdns.start()
                 try {
                     var port = cachedPort
-                    var lastFailure = "No local ADB endpoint found. Keep Wireless debugging enabled."
-                    repeat(3) { attempt ->
-                        if (port !in 1..65535) {
-                            report("Finding this phone's Wireless debugging connection")
-                            port = withTimeoutOrNull(12_000L) { ports.receive() } ?: 0
-                        }
-                        if (port !in 1..65535) return@withTimeoutOrNull Result.Failure(lastFailure)
-                        report("Connecting to Wireless debugging (attempt ${attempt + 1}/3)")
-                        PeerLinkAdbManager.resetInstance(context)
-                        val client = AdbConnectClient(context)
-                        try {
-                            val connected = try { client.connect("127.0.0.1", port) }
-                            catch (cancelled: CancellationException) { throw cancelled }
-                            catch (_: Exception) { false }
-                            if (!connected) {
-                                lastFailure = "ADB connection was not accepted. Check Wireless debugging and pairing."
-                            } else {
-                                if (context.checkSelfPermission(WRITE_SECURE_SETTINGS) != PackageManager.PERMISSION_GRANTED) {
-                                    report("Completing Prime permission setup")
-                                    val output = client.shell("pm grant ${context.packageName} android.permission.WRITE_SECURE_SETTINGS")
-                                    if (output == null || context.checkSelfPermission(WRITE_SECURE_SETTINGS) != PackageManager.PERMISSION_GRANTED) {
-                                        return@withTimeoutOrNull Result.Failure("Android did not grant Prime's settings permission")
-                                    }
-                                }
-                                report("Starting Prime engine")
-                                // The launcher contains a per-install token: never log the command.
-                                if (client.shell(PrimeShizukuStarter.internalCommand(context)) == null) {
-                                    return@withTimeoutOrNull Result.Failure("Prime launcher timed out; retry activation")
-                                }
-                                return@withTimeoutOrNull Result.Success(port)
-                            }
-                        } finally {
-                            client.disconnect()
-                        }
-                        // Prefer a fresh advertisement; allow a newly advertised daemon time to bind.
-                        port = ports.tryReceive().getOrNull() ?: port
-                        delay(600L)
-                        if (attempt == 1) port = 0
+                    if (port !in 1..65535) {
+                        val systemPort = adbTcpPort()
+                        if (systemPort > 0) port = systemPort
                     }
-                    Result.Failure(lastFailure)
+                    if (port !in 1..65535) {
+                        port = withTimeoutOrNull(discoverTimeoutMs) { ports.receive() } ?: 0
+                    }
+                    if (port !in 1..65535) {
+                        return@withTimeoutOrNull Result.Failure(
+                            "No local ADB endpoint found. Keep Wireless debugging enabled."
+                        )
+                    }
+                    report("Starting with wireless adb in port $port")
+                    PeerLinkAdbManager.resetInstance(context)
+                    val client = AdbConnectClient(context)
+                    try {
+                        val connected = try {
+                            client.connect("127.0.0.1", port)
+                        } catch (cancelled: CancellationException) {
+                            throw cancelled
+                        } catch (error: ConnectException) {
+                            return@withTimeoutOrNull Result.Failure(
+                                "Cannot connect to Wireless debugging port $port",
+                                error,
+                            )
+                        } catch (error: SSLProtocolException) {
+                            return@withTimeoutOrNull Result.Failure(
+                                "Prime pairing is required before activation",
+                                error,
+                            )
+                        } catch (_: Exception) {
+                            false
+                        }
+                        if (!connected) {
+                            return@withTimeoutOrNull Result.Failure(
+                                "ADB connection was not accepted. Check Wireless debugging and pairing."
+                            )
+                        }
+                        val output = client.shell(PrimeShizukuStarter.internalCommand(context))
+                            ?: return@withTimeoutOrNull Result.Failure(
+                                "Prime launcher timed out; retry activation"
+                            )
+                        if (!output.contains("info: peerlink_starter exit with 0")) {
+                            return@withTimeoutOrNull Result.Failure(
+                                "Prime launcher timed out; retry activation"
+                            )
+                        }
+                        Result.Success(port)
+                    } finally {
+                        client.disconnect()
+                    }
                 } finally {
-                    discovery.stopConnectDiscovery()
+                    adbMdns.stop()
                     ports.close()
                 }
             } ?: Result.Failure("Prime timed out: $stage. Check Wireless debugging and retry.")
         } catch (cancelled: CancellationException) {
             throw cancelled
-        } catch (error: Exception) {
-            // Do not expose shell command text or the authentication token through errors.
+        } catch (_: Exception) {
             Result.Failure("Prime failed while ${stage.lowercase()}; retry activation")
         }
     }
+
+    private fun adbTcpPort(): Int {
+        val service = systemProperty("service.adb.tcp.port")
+        if (service > 0) return service
+        return systemProperty("persist.adb.tcp.port")
+    }
+
+    private fun systemProperty(name: String): Int = runCatching {
+        val systemProperties = Class.forName("android.os.SystemProperties")
+        val get = systemProperties.getMethod("get", String::class.java, String::class.java)
+        (get.invoke(null, name, "-1") as String).toInt()
+    }.getOrDefault(-1)
 }

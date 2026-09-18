@@ -9,10 +9,9 @@
 #include <sys/stat.h>
 #include <sys/system_properties.h>
 #include <cerrno>
+#include <csignal>
 #include <string>
 #include <termios.h>
-#include <signal.h>
-#include <sys/prctl.h>
 #include "android.h"
 #include "misc.h"
 #include "selinux.h"
@@ -134,41 +133,21 @@ static void start_server(
         }
         case 0: {
             LOGD("child");
-            prctl(PR_SET_PDEATHSIG, 0);
-            signal(SIGHUP, SIG_IGN);
-            signal(SIGPIPE, SIG_IGN);
-            if (setsid() == -1) {
-                perrorf("warn: setsid failed: %s\n", strerror(errno));
-            }
+            setsid();
             chdir("/");
-            umask(077);
-
-            int nullfd = open("/dev/null", O_RDONLY);
-            if (nullfd != -1) {
-                dup2(nullfd, STDIN_FILENO);
-                if (nullfd > 2) close(nullfd);
-            }
-            int logfd = open("/data/local/tmp/peerlink_prime.log",
-                             O_WRONLY | O_CREAT | O_APPEND, 0600);
-            if (logfd != -1) {
-                dup2(logfd, STDOUT_FILENO);
-                dup2(logfd, STDERR_FILENO);
-                if (logfd > 2) close(logfd);
-            } else {
-                int fd = open("/dev/null", O_WRONLY);
-                if (fd != -1) {
-                    dup2(fd, STDOUT_FILENO);
-                    dup2(fd, STDERR_FILENO);
-                    if (fd > 2) close(fd);
-                }
+            int fd = open("/dev/null", O_RDWR);
+            if (fd != -1) {
+                dup2(fd, STDIN_FILENO);
+                dup2(fd, STDOUT_FILENO);
+                dup2(fd, STDERR_FILENO);
+                if (fd > 2) close(fd);
             }
             run_server(path, main_class, process_name, auth_token);
         }
         default: {
             printf("info: peerlink_prime pid is %d\n", pid);
-            printf("info: starter parent exit with 0\n");
-            fflush(stdout);
-            _exit(EXIT_SUCCESS);
+            printf("info: peerlink_starter exit with 0\n");
+            exit(EXIT_SUCCESS);
         }
     }
 }
@@ -232,7 +211,7 @@ int main(int argc, char *argv[]) {
 
     uid_t uid = getuid();
     if (uid != 0 && uid != 2000) {
-        perrorf("fatal: run Shizuku from non root nor adb user (uid=%d).\n", uid);
+        perrorf("fatal: run Prime from non root nor adb user (uid=%d).\n", uid);
         exit(EXIT_FATAL_UID);
     }
 
@@ -283,7 +262,7 @@ int main(int argc, char *argv[]) {
         if (kill(pid, SIGKILL) == 0)
             printf("info: killed %d (%s)\n", pid, name);
         else if (errno == EPERM) {
-            perrorf("fatal: can't kill %d, please try to stop existing Shizuku from app first.\n", pid);
+            perrorf("fatal: can't kill %d, please try to stop existing Prime from app first.\n", pid);
             exit(EXIT_FATAL_KILL);
         } else {
             printf("warn: failed to kill %d (%s)\n", pid, name);

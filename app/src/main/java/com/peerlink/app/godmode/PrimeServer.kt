@@ -78,6 +78,7 @@ object PrimeServer {
             try { server.close() } catch (_: Exception) {}
         })
 
+        grantManagerSecureSettings()
         log("PrimeServer listening (PID=${android.os.Process.myPid()})")
 
         while (!server.isClosed) {
@@ -541,6 +542,17 @@ object PrimeServer {
             runCatching { process.errorStream.close() }
             runCatching { process.inputStream.close() }
         }
+    }
+
+    private fun grantManagerSecureSettings() {
+        runCatching {
+            val process = Runtime.getRuntime().exec(
+                arrayOf("pm", "grant", "com.peerlink.app", "android.permission.WRITE_SECURE_SETTINGS")
+            )
+            if (!process.waitFor(5, java.util.concurrent.TimeUnit.SECONDS)) {
+                process.destroyForcibly()
+            }
+        }.onFailure { log("grant WRITE_SECURE_SETTINGS: ${it.message}") }
     }
 
     private fun setProcessName(name: String) {

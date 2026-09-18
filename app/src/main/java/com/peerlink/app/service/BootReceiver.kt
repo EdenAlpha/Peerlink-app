@@ -88,7 +88,10 @@ class BootReceiver : BroadcastReceiver() {
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 AppState.appendLog("[BOOT      ] Prime engine not running — attempting Shizuku-style auto start")
-                val result = PrimeShizukuBootstrapEngine(context).start(needBootstrap = false)
+                val result = PrimeShizukuBootstrapEngine(context).start(
+                    needBootstrap = false,
+                    discoverTimeoutMs = 3_000L,
+                )
                 if (result is PrimeShizukuBootstrapEngine.Result.Success) {
                     AppState.appendLog("[BOOT      ] Prime engine auto-started via 127.0.0.1:${result.port}")
                     GodModeManager.onEngineAutoStarted(context)
