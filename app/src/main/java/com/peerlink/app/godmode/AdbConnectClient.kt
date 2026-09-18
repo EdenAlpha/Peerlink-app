@@ -29,6 +29,14 @@ class AdbConnectClient(context: Context) {
         }
     }
 
+    suspend fun shellCommand(command: String): String? = withTimeoutOrNull(15_000L) {
+        runInterruptible(Dispatchers.IO) {
+            manager.openStream("shell:$command").use { stream ->
+                stream.openInputStream().reader().readText()
+            }
+        }
+    }
+
     fun disconnect() {
         // Close this client's manager, never a newer singleton or its stored key.
         try { manager.disconnect() } catch (_: Exception) {

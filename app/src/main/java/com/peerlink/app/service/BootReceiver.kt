@@ -77,6 +77,7 @@ class BootReceiver : BroadcastReceiver() {
      */
     private fun adbStart(context: Context) {
         if (context.checkSelfPermission(WRITE_SECURE_SETTINGS) != PackageManager.PERMISSION_GRANTED) return
+        PrimeClient.init(context)
         if (PrimeClient.isAlive()) return
 
         val cr = context.contentResolver

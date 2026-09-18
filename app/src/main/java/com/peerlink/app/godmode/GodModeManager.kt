@@ -511,6 +511,13 @@ object GodModeManager {
                 AppState.appendLog("[PRIME-GUARD] PrimeServer heartbeat lost — automatic recovery starting")
 
                 commandGate.withPermit {
+                    if (isPrimeLoopbackBound()) {
+                        AppState.appendLog("[PRIME-GUARD] Loopback still bound — not relaunching")
+                        AppState.primeServerAlive = true
+                        _primeLinkState.value = PrimeLinkState.CONNECTED
+                        updateSetupSnapshot(primeServerAlive = true)
+                        return@withPermit
+                    }
                     if (!PrimeClient.isAlive(timeoutMs = 2_000)) {
                         val recovered = ensurePrimeServerAlive(needBootstrap = false)
                         if (!recovered) {
@@ -914,7 +921,7 @@ object GodModeManager {
         activationJob = scope.launch {
             try {
                 commandGate.withPermit {
-                    var alive = PrimeClient.isAlive()
+                    var alive = PrimeClient.isAlive(timeoutMs = 2_000)
                     if (alive && PrimeClient.protocolVersion < 5) {
                         if (PrimeGameplayTracker.isMatchProtected()) {
                             setState(State.ERROR, "Finish the match before upgrading the Prime engine")
@@ -1010,6 +1017,15 @@ object GodModeManager {
      * Returns true once PrimeServer is confirmed alive. Does NOT run any session
      * commands — callers decide what to do next.
      */
+    private fun isPrimeLoopbackBound(): Boolean = try {
+        ServerSocket().use {
+            it.bind(InetSocketAddress(PrimeServer.HOST, PrimeServer.PORT), 1)
+            false
+        }
+    } catch (_: Exception) {
+        true
+    }
+
     private suspend fun ensurePrimeServerAlive(needBootstrap: Boolean): Boolean {
         setState(if (needBootstrap) State.BOOTSTRAPPING else State.CONNECTING,
             if (needBootstrap) "Completing one-time Prime setup…" else "Restoring Prime Mode connection…")

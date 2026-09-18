@@ -152,6 +152,15 @@ static void start_server(
     }
 }
 
+static bool g_old_server_alive = false;
+
+static void mark_old_server(pid_t pid) {
+    if (pid == getpid()) return;
+    char name[1024];
+    if (get_proc_name(pid, name, 1024) != 0) return;
+    if (strcmp(SERVER_NAME, name) == 0) g_old_server_alive = true;
+}
+
 static int check_selinux(const char *s, const char *t, const char *c, const char *p) {
     int res = se::selinux_check_access(s, t, c, p, nullptr);
 #ifndef DEBUG
@@ -268,6 +277,13 @@ int main(int argc, char *argv[]) {
             printf("warn: failed to kill %d (%s)\n", pid, name);
         }
     });
+
+    for (int i = 0; i < 20; ++i) {
+        g_old_server_alive = false;
+        foreach_proc(mark_old_server);
+        if (!g_old_server_alive) break;
+        usleep(100000);
+    }
 
     if (access(apk_path.c_str(), R_OK) == 0) {
         printf("info: use apk path from argv\n");

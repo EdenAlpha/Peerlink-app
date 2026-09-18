@@ -50,13 +50,13 @@ class PrimeShizukuBootstrapEngine(private val context: Context) {
                 report(stage)
                 adbMdns.start()
                 try {
-                    var port = cachedPort
-                    if (port !in 1..65535) {
-                        val systemPort = adbTcpPort()
-                        if (systemPort > 0) port = systemPort
-                    }
-                    if (port !in 1..65535) {
-                        port = withTimeoutOrNull(discoverTimeoutMs) { ports.receive() } ?: 0
+                    val livePort = withTimeoutOrNull(discoverTimeoutMs) { ports.receive() } ?: 0
+                    val systemPort = adbTcpPort()
+                    val port = when {
+                        livePort in 1..65535 -> livePort
+                        cachedPort in 1..65535 -> cachedPort
+                        systemPort > 0 -> systemPort
+                        else -> 0
                     }
                     if (port !in 1..65535) {
                         return@withTimeoutOrNull Result.Failure(
@@ -89,7 +89,7 @@ class PrimeShizukuBootstrapEngine(private val context: Context) {
                                 "ADB connection was not accepted. Check Wireless debugging and pairing."
                             )
                         }
-                        val output = client.shell(PrimeShizukuStarter.internalCommand(context))
+                        val output = client.shellCommand(PrimeShizukuStarter.internalCommand(context))
                             ?: return@withTimeoutOrNull Result.Failure(
                                 "Prime launcher timed out; retry activation"
                             )

@@ -62,7 +62,10 @@ object PrimeServer {
         log("PrimeServer starting on $HOST:$PORT")
 
         val server = try {
-            ServerSocket(PORT, MAX_BACKLOG, InetAddress.getByName(HOST))
+            ServerSocket().apply {
+                reuseAddress = true
+                bind(java.net.InetSocketAddress(InetAddress.getByName(HOST), PORT), MAX_BACKLOG)
+            }
         } catch (e: Exception) {
             log("FATAL: cannot bind port $PORT — ${e.message}")
             System.exit(1)
