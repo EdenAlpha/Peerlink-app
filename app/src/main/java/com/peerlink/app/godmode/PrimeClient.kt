@@ -44,7 +44,7 @@ object PrimeClient {
         val response = request("__health__", timeoutMs) ?: return false
         val output = response.optString("output", "")
         val version = output.removePrefix("prime_ok_v").toIntOrNull() ?: 0
-        val alive = response.optBoolean("ok", false) && version in 2..5
+        val alive = response.optBoolean("ok", false) && version in 2..6
         protocolVersion = if (alive) version else 0
         return alive
     }
@@ -108,6 +108,43 @@ object PrimeClient {
                 if (length !in 64..(2 * 1024 * 1024) || topHeight <= 0 || gap < 0 || referenceHeight <= 0) return null
                 val bytes = readExactly(input, length) ?: return null
                 ScoreCaptureFrame(bytes, topHeight, gap, referenceHeight)
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    data class FullCaptureFrame(val bytes: ByteArray, val width: Int, val height: Int)
+
+    /**
+     * v6 full-display JPEG for the F33 statistics reader. Returns null for a
+     * pre-v6 resident PrimeServer; callers then fall back to the composite
+     * band capture (score only, no statistics table).
+     */
+    fun captureFullFrame(timeoutMs: Int = 4_000): FullCaptureFrame? {
+        val token = PrimeAuth.tokenOrNull() ?: return null
+        return try {
+            Socket().use { s ->
+                s.soTimeout = timeoutMs
+                s.connect(InetSocketAddress(HOST, PORT), minOf(timeoutMs, 1_000))
+                val req = JSONObject().apply {
+                    put("token", token)
+                    put("cmd", "__fullcap_jpeg__")
+                }.toString() + "\n"
+                val output = s.getOutputStream()
+                output.write(req.toByteArray(Charsets.UTF_8))
+                output.flush()
+
+                val input = s.getInputStream()
+                val headerLine = readUtf8LineLimited(input, 8 * 1024) ?: return null
+                val header = JSONObject(headerLine)
+                if (!header.optBoolean("ok", false) || !header.optBoolean("fullFrame", false)) return null
+                val length = header.optInt("binaryBytes", -1)
+                val width = header.optInt("width", -1)
+                val height = header.optInt("height", -1)
+                if (length !in 64..(4 * 1024 * 1024) || width <= 0 || height <= 0) return null
+                val bytes = readExactly(input, length) ?: return null
+                FullCaptureFrame(bytes, width, height)
             }
         } catch (_: Exception) {
             null

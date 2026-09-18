@@ -1,0 +1,64 @@
+== BOX_YGAP_FRAC=0.14 (0.70x)
+   clean=149/182 wrong_in_envelope=0 wrong_edge=1
+evidence: /home/z/my-project/work/f36_basin_evidence/robustness_latest.json
+evidence: /home/z/my-project/work/f36_basin_evidence/robustness_latest.txt
+== BOX_YGAP_FRAC=0.17 (0.85x)
+   clean=149/182 wrong_in_envelope=0 wrong_edge=1
+evidence: /home/z/my-project/work/f36_basin_evidence/robustness_latest.json
+evidence: /home/z/my-project/work/f36_basin_evidence/robustness_latest.txt
+== BOX_YGAP_FRAC=0.23 (1.15x)
+   clean=149/182 wrong_in_envelope=0 wrong_edge=1
+evidence: /home/z/my-project/work/f36_basin_evidence/robustness_latest.json
+evidence: /home/z/my-project/work/f36_basin_evidence/robustness_latest.txt
+== BOX_YGAP_FRAC=0.26 (1.30x)
+   clean=146/182 wrong_in_envelope=0 wrong_edge=1
+evidence: /home/z/my-project/work/f36_basin_evidence/robustness_latest.json
+evidence: /home/z/my-project/work/f36_basin_evidence/robustness_latest.txt
+== LOCAL_YGAP_FRAC=0.175 (0.70x)
+   clean=149/182 wrong_in_envelope=0 wrong_edge=1
+evidence: /home/z/my-project/work/f36_basin_evidence/robustness_latest.json
+evidence: /home/z/my-project/work/f36_basin_evidence/robustness_latest.txt
+== LOCAL_YGAP_FRAC=0.2125 (0.85x)
+   clean=149/182 wrong_in_envelope=0 wrong_edge=1
+evidence: /home/z/my-project/work/f36_basin_evidence/robustness_latest.json
+evidence: /home/z/my-project/work/f36_basin_evidence/robustness_latest.txt
+== LOCAL_YGAP_FRAC=0.2875 (1.15x)
+   clean=149/182 wrong_in_envelope=0 wrong_edge=1
+evidence: /home/z/my-project/work/f36_basin_evidence/robustness_latest.json
+evidence: /home/z/my-project/work/f36_basin_evidence/robustness_latest.txt
+== LOCAL_YGAP_FRAC=0.325 (1.30x)
+   clean=149/182 wrong_in_envelope=0 wrong_edge=1
+evidence: /home/z/my-project/work/f36_basin_evidence/robustness_latest.json
+evidence: /home/z/my-project/work/f36_basin_evidence/robustness_latest.txt
+== XJOIN_FRAC=0.105 (0.70x)
+   clean=149/182 wrong_in_envelope=0 wrong_edge=1
+evidence: /home/z/my-project/work/f36_basin_evidence/robustness_latest.json
+evidence: /home/z/my-project/work/f36_basin_evidence/robustness_latest.txt
+== XJOIN_FRAC=0.1275 (0.85x)
+   clean=149/182 wrong_in_envelope=0 wrong_edge=1
+evidence: /home/z/my-project/work/f36_basin_evidence/robustness_latest.json
+evidence: /home/z/my-project/work/f36_basin_evidence/robustness_latest.txt
+== XJOIN_FRAC=0.1725 (1.15x)
+   clean=149/182 wrong_in_envelope=0 wrong_edge=1
+evidence: /home/z/my-project/work/f36_basin_evidence/robustness_latest.json
+evidence: /home/z/my-project/work/f36_basin_evidence/robustness_latest.txt
+== XJOIN_FRAC=0.195 (1.30x)
+   clean=149/182 wrong_in_envelope=0 wrong_edge=1
+evidence: /home/z/my-project/work/f36_basin_evidence/robustness_latest.json
+evidence: /home/z/my-project/work/f36_basin_evidence/robustness_latest.txt
+== THIN_ASPECT=0.196 (0.70x)
+   clean=149/182 wrong_in_envelope=0 wrong_edge=1
+evidence: /home/z/my-project/work/f36_basin_evidence/robustness_latest.json
+evidence: /home/z/my-project/work/f36_basin_evidence/robustness_latest.txt
+== THIN_ASPECT=0.238 (0.85x)
+   clean=149/182 wrong_in_envelope=0 wrong_edge=1
+evidence: /home/z/my-project/work/f36_basin_evidence/robustness_latest.json
+evidence: /home/z/my-project/work/f36_basin_evidence/robustness_latest.txt
+== THIN_ASPECT=0.322 (1.15x)
+   clean=149/182 wrong_in_envelope=0 wrong_edge=1
+evidence: /home/z/my-project/work/f36_basin_evidence/robustness_latest.json
+evidence: /home/z/my-project/work/f36_basin_evidence/robustness_latest.txt
+== THIN_ASPECT=0.364 (1.30x)
+   clean=149/182 wrong_in_envelope=0 wrong_edge=1
+evidence: /home/z/my-project/work/f36_basin_evidence/robustness_latest.json
+evidence: /home/z/my-project/work/f36_basin_evidence/robustness_latest.txt

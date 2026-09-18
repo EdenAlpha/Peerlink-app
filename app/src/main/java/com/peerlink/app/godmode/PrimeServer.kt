@@ -39,9 +39,14 @@ object PrimeServer {
     private const val SHUTDOWN_CMD = "__shutdown__"
     private const val SCREENSHOT_CMD = "__screencap_png__"
     private const val SCORE_SCREENSHOT_CMD = "__scorecap_jpeg__"
+    private const val FULLCAP_CMD = "__fullcap_jpeg__"
     private const val MAX_SCREENSHOT_BYTES = 12 * 1024 * 1024
     private const val MAX_SCORE_FRAME_BYTES = 2 * 1024 * 1024
     private const val SCORE_FRAME_MAX_WIDTH = 960
+    // v6: __fullcap_jpeg__ delivers a full-display JPEG (capped at 1280 px)
+    // so the F33 pixel detector can read the 13 statistics rows, which the
+    // legacy band composite physically crops away.
+    private const val FULL_FRAME_MAX_WIDTH = 1280
 
     /** Shizuku-style app_process launch command. */
     fun buildLaunchCommand(context: Context): String {
@@ -126,12 +131,57 @@ object PrimeServer {
             val cmd = req.optString("cmd", "").trim()
             if (cmd.isEmpty()) return
 
-            if (cmd == SCREENSHOT_CMD || cmd == SCORE_SCREENSHOT_CMD) {
+            if (cmd == SCREENSHOT_CMD || cmd == SCORE_SCREENSHOT_CMD || cmd == FULLCAP_CMD) {
                 if (!screenshotBusy.compareAndSet(false, true)) {
                     writer.println(JSONObject().put("ok", false).put("error", "capture_busy"))
                     return
                 }
                 try {
+                    if (cmd == FULLCAP_CMD) {
+                        // v6: full display JPEG for the statistics-table reader.
+                        val fastSource = captureDisplayFull()
+                        val full = fastSource?.let { makeFullFrame(it, recycleSource = true) }
+                        if (full != null) {
+                            writer.println(JSONObject().apply {
+                                put("ok", true)
+                                put("binaryBytes", full.bytes.size)
+                                put("width", full.width)
+                                put("height", full.height)
+                                put("fullFrame", true)
+                                put("capturePath", "surfacecontrol")
+                            }.toString())
+                            writer.flush()
+                            socket.outputStream.write(full.bytes)
+                            socket.outputStream.flush()
+                        } else {
+                            val fullPng = runBinaryCommand(
+                                listOf("/system/bin/screencap", "-p"),
+                                MAX_SCREENSHOT_BYTES,
+                                2_000L,
+                            )
+                            val decoded = fullPng?.let { BitmapFactory.decodeByteArray(it, 0, it.size) }
+                            val frame = decoded?.let { makeFullFrame(it, recycleSource = true) }
+                            if (frame == null) {
+                                writer.println(JSONObject().apply {
+                                    put("ok", false)
+                                    put("error", "full_capture_failed")
+                                }.toString())
+                            } else {
+                                writer.println(JSONObject().apply {
+                                    put("ok", true)
+                                    put("binaryBytes", frame.bytes.size)
+                                    put("width", frame.width)
+                                    put("height", frame.height)
+                                    put("fullFrame", true)
+                                    put("capturePath", "screencap_fallback")
+                                }.toString())
+                                writer.flush()
+                                socket.outputStream.write(frame.bytes)
+                                socket.outputStream.flush()
+                            }
+                        }
+                        return
+                    }
                     if (cmd == SCORE_SCREENSHOT_CMD) {
                         // Fast path: SurfaceFlinger capture through the privileged
                         // Prime process. No PNG process, filesystem round-trip or
@@ -205,7 +255,7 @@ object PrimeServer {
             }
 
             val output = when (cmd) {
-                HEALTH_CMD -> "prime_ok_v5"
+                HEALTH_CMD -> "prime_ok_v6"
                 SHUTDOWN_CMD -> "prime_stopping"
                 else -> runShell(cmd, req.optLong("timeoutMs", DEFAULT_CMD_TIMEOUT_MS).coerceIn(250L, 120_000L))
             }
@@ -391,6 +441,67 @@ object PrimeServer {
     }.onFailure { e ->
         log("SurfaceControl score capture unavailable: ${e.javaClass.simpleName}: ${e.message}")
     }.getOrNull()
+
+    /**
+     * v6 full-display capture for the statistics reader. Identical hidden-API
+     * path as [captureDisplayFast] but capped at 1280 px so the 13 statistics
+     * rows stay legible; the F33 detector needs the whole display because the
+     * legacy band composite crops away most of the table.
+     */
+    private fun captureDisplayFull(): Bitmap? = runCatching {
+        val surfaceControl = Class.forName("android.view.SurfaceControl")
+        val token = surfaceControl.getMethod("getInternalDisplayToken").invoke(null) ?: return null
+        val builderClass = Class.forName("android.view.SurfaceControl\$DisplayCaptureArgs\$Builder")
+        val ibinderClass = Class.forName("android.os.IBinder")
+        val builder = builderClass.getConstructor(ibinderClass).newInstance(token)
+        runCatching {
+            builderClass.getMethod("setSize", Int::class.javaPrimitiveType, Int::class.javaPrimitiveType)
+                .invoke(builder, FULL_FRAME_MAX_WIDTH, 0)
+        }
+        val args = builderClass.getMethod("build").invoke(builder)
+        val capture = surfaceControl.getMethod("captureDisplay", args.javaClass).invoke(null, args) ?: return null
+        val hardwareBitmap = capture.javaClass.getMethod("asBitmap").invoke(capture) as? Bitmap ?: return null
+        val software = hardwareBitmap.copy(Bitmap.Config.ARGB_8888, false)
+        if (hardwareBitmap !== software && !hardwareBitmap.isRecycled) hardwareBitmap.recycle()
+        software
+    }.onFailure { e ->
+        log("SurfaceControl full capture unavailable: ${e.javaClass.simpleName}: ${e.message}")
+    }.getOrNull()
+
+    private class FullFrame(val bytes: ByteArray, val width: Int, val height: Int)
+
+    /** Scale a full display frame to the detector working size and JPEG it. */
+    private fun makeFullFrame(source: Bitmap, recycleSource: Boolean = false): FullFrame? {
+        if (source.width < 320 || source.height < 180) {
+            if (recycleSource && !source.isRecycled) source.recycle()
+            return null
+        }
+        var scaled: Bitmap? = null
+        return try {
+            val scale = if (source.width > FULL_FRAME_MAX_WIDTH) {
+                FULL_FRAME_MAX_WIDTH.toFloat() / source.width
+            } else 1f
+            val frameBitmap = if (scale < 0.999f) {
+                scaled = Bitmap.createScaledBitmap(
+                    source,
+                    FULL_FRAME_MAX_WIDTH,
+                    (source.height * scale).toInt().coerceAtLeast(1),
+                    true,
+                )
+                scaled!!
+            } else source
+            val out = java.io.ByteArrayOutputStream(160 * 1024)
+            if (!frameBitmap.compress(Bitmap.CompressFormat.JPEG, 88, out)) return null
+            if (out.size() !in 64..MAX_SCORE_FRAME_BYTES) return null
+            FullFrame(out.toByteArray(), frameBitmap.width, frameBitmap.height)
+        } catch (e: Throwable) {
+            log("Full frame capture failed: ${e.message}")
+            null
+        } finally {
+            if (scaled != null && !scaled.isRecycled) scaled.recycle()
+            if (recycleSource && !source.isRecycled) source.recycle()
+        }
+    }
 
     private fun runBinaryCommand(command: List<String>, maxBytes: Int, timeoutMs: Long): ByteArray? {
         val process = try {

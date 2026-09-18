@@ -32,7 +32,8 @@ for name in [
     'kotlin_structural', 'f11_prime_discovery', 'f16_ui_discovery_regression',
     'f20_capability_regression', 'f21_runtime_ui_regression',
     'f22_runtime_performance_regression',
-    'f24_light_trace_marker_regression', 'f31_match_automation_regression', 'f25_integration', 'f26_integration', 'trace_analyzer_test',
+    'f24_light_trace_marker_regression', 'f31_match_automation_regression',
+    'f34_score_detector_regression', 'f25_integration', 'f26_integration', 'trace_analyzer_test',
 ]:
     run(name, [sys.executable, 'tests/' + name + '.py'])
 

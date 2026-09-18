@@ -100,6 +100,7 @@ object MatchTracker {
         myGoals: Int,
         opponentGoals: Int,
         source: String,
+        stats: MatchStats? = null,
     ): Boolean = synchronized(lock) {
         if (!sessionActive || myGoals !in 0..20 || opponentGoals !in 0..20) return@synchronized false
         if (epochSealed) return@synchronized false
@@ -135,6 +136,7 @@ object MatchTracker {
             calibrationLoaded = false,
             confirmed = true,
             settlementNote = "Final score verified from eFootball screen ($source)",
+            stats = stats,
         )
         val context = appContext ?: return@synchronized false
         val stored = runCatching { MatchStore.append(context, record) }

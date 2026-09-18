@@ -1,0 +1,68 @@
+F35 parameter basin check — full 182-check robustness matrix re-run per perturbation
+Generated: 2026-09-16 (this run), reader: tests/f34_reference/prototype.py (F35)
+
+Method: every new constant was perturbed to 0.70x / 0.85x / 1.15x / 1.30x of its
+shipped value and the ENTIRE 26-transform x 7-capture matrix re-ran. A constant
+is accepted only if 0 in-envelope wrong reads holds across the whole basin
+(exactness may vary; wrongness may not).
+
+RESULT SUMMARY (all rows re-ran the full 182-check matrix):
+
+BLUE_FREE_BG_RATIO (shipped 0.15):
+  0.105  149/182, 0 wrong   0.128  149/182, 0 wrong
+  0.172  149/182, 0 wrong   0.195  149/182, 0 wrong
+  -> plateau. Measured gap it sits in: UI yellow b/g <= 0.06 (even under JPEG
+     bleed), floodlit grass b/g >= 0.24.
+
+MENU_SOLID_FILL (shipped 0.72):
+  0.504  98/182, 0 wrong (recall loss: real menu digits eaten)
+  0.612  141/182, 0 wrong
+  0.828  149/182, 0 wrong   0.936  149/182, 0 wrong
+  -> safe across the whole upper side; recall degrades only when the guard
+     crosses INTO the real digit population (measured digits 0.54-0.60,
+     box blobs 0.86-0.92; 0.72 sits mid-gap).
+
+STATS_PIECE_FLOOR (shipped 9):
+  6, 8, 10, 12 -> all 149/182, 0 wrong. Plateau.
+  (6 admits 8px glyphs: still no wrongs on this set; 9 chosen as the
+   measured confusion onset with margin.)
+
+F35_TDEEP (deep-ink floor fraction inside [p02, tOtsu]; shipped 0.25):
+  0.175 / 0.212 / 0.287 / 0.325 -> all 149/182, 0 wrong. Plateau.
+
+F35_UNIMODAL fallback span (shipped 0.45):
+  0.315 / 0.383 / 0.517 / 0.585 -> all 149/182, 0 wrong. Plateau.
+
+F35_YSTRONG_CHROMA (ambiguous-zone halo chroma ratio; shipped 0.60):
+  0.420 / 0.510 / 0.690 / 0.780 -> all 149/182, 0 wrong. Plateau.
+
+F35_YSTRONG_HUE (halo hue window around yellow; shipped 45deg):
+  31.5 / 38.25 / 51.75 / 58.5 -> all 149/182, 0 wrong. Plateau.
+
+F35_BLOB_TALL (fused-banner tall-column threshold; shipped 0.55):
+  0.385: 145/182, 0 wrong   0.468: 148/182, 0 wrong
+  0.632: 148/182, 0 wrong   0.715: 146/182, 0 wrong
+  -> recall varies, wrongness never. 0.55 is the recall optimum.
+
+F35_BLOB_BRIDGE (wall-bridge factor; shipped 1.5):
+  1.05: 149   1.275: 149   1.725: 148   1.95: 148 -> 0 wrong throughout.
+
+F35_FH_LOWER (classify_fh bottom-quarter window; shipped 0.70):
+  0.490: 114/182, 1 IN-ENVELOPE WRONG (the F crossbar enters the lower-right
+         window and an F reads as H -> finality wrong)
+  0.595: 145/182, 0 wrong
+  0.805 / 0.910: 149/182, 0 wrong
+  -> THE ONE HARD BASIN EDGE, and it is structural: the F crossbar occupies
+     ~0.45-0.57 of glyph height, so the window must start above ~0.58.
+     The F34 value 0.55 sat exactly ON this edge (measured crossbar 0.55h on
+     a 10px glyph) - that is why finality failed at 0.75x in F34. The shipped
+     0.70 leaves 0.13h margin above the crossbar.
+
+F35_FH_HGATE (H top gate; shipped 0.80):
+  0.680 / 0.744 / 0.848 / 0.952 -> all 149/182, 0 wrong.
+  -> plateau between the measured populations: H stem-top fill 0.5-0.67,
+     F top bar ~1.0; any gate in (0.67, 1.0) separates them.
+
+CONCLUSION: no shipped constant is a needle point. Every one sits inside a
+plateau whose width is at least +/-30% (most far wider), and the single hard
+edge (FH_LOWER) is a measured structural constraint of the letter F itself.

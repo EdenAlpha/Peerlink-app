@@ -670,7 +670,7 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
             val mine = if (side == MatchControlChannel.Side.HOME) score.home else score.away
             val theirs = if (side == MatchControlChannel.Side.HOME) score.away else score.home
             // Serialize validation and ledger commit against stop, rematch and competing OCR.
-            if (!MatchTracker.confirmScreenScore(mine, theirs, "$mode:${score.source}")) return false
+            if (!MatchTracker.confirmScreenScore(mine, theirs, "$mode:${score.source}", score.stats)) return false
             scoreConfirmed = true
             scoreConfirmedAtMs = SystemClock.elapsedRealtime()
             MatchMarkerOverlay.setWaiting()

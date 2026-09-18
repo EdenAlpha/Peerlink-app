@@ -12,6 +12,49 @@ import java.nio.file.StandardCopyOption
 
 enum class MatchResult { WIN, LOSS, DRAW }
 
+/** One statistics-board row read from the eFootball result screen (F33). */
+data class MatchStatRow(
+    val name: String,
+    val home: Int,
+    val away: Int,
+)
+
+/**
+ * Full 13-row statistics table read by the F33 pixel detector on the
+ * statistics board. Recorded alongside the confirmed score for the match
+ * ledger; entirely optional and never part of settlement or integrity.
+ */
+data class MatchStats(val rows: List<MatchStatRow>) {
+    operator fun get(name: String): Pair<Int, Int>? =
+        rows.firstOrNull { it.name == name }?.let { it.home to it.away }
+
+    fun toJsonArray(): JSONArray = JSONArray().apply {
+        rows.forEach { row ->
+            put(JSONObject().apply {
+                put("name", row.name)
+                put("home", row.home)
+                put("away", row.away)
+            })
+        }
+    }
+
+    companion object {
+        fun fromJson(array: JSONArray): MatchStats? {
+            val rows = ArrayList<MatchStatRow>(array.length())
+            for (i in 0 until array.length()) {
+                val o = array.optJSONObject(i) ?: continue
+                val name = o.optString("name")
+                val home = o.optInt("home", -1)
+                val away = o.optInt("away", -1)
+                if (name.isNotEmpty() && home in 0..100 && away in 0..100) {
+                    rows.add(MatchStatRow(name, home, away))
+                }
+            }
+            return if (rows.isEmpty()) null else MatchStats(rows)
+        }
+    }
+}
+
 /**
  * A goal as recorded in the legacy audit ledger (F13-F31 packet-decode era).
  * F32 removed packet goal detection: new records always carry an empty goal
@@ -124,6 +167,7 @@ data class MatchRecord(
     val confirmed: Boolean = false,
     val settlementNote: String? = null,
     val integrityVersion: Int = CURRENT_INTEGRITY_VERSION,
+    val stats: MatchStats? = null,
 ) {
     val result: MatchResult
         get() = when {
@@ -167,6 +211,7 @@ data class MatchRecord(
         put("confirmed", confirmed)
         put("settlementNote", settlementNote ?: "")
         put("integrityVersion", integrityVersion)
+        stats?.let { put("stats", it.toJsonArray()) }
         put("goals", JSONArray().apply {
             goals.forEach { goal ->
                 put(JSONObject().apply {
@@ -271,6 +316,7 @@ data class MatchRecord(
                     }
                 },
                 integrityVersion = integrityVersion,
+                stats = json.optJSONArray("stats")?.let { MatchStats.fromJson(it) },
             )
         }
     }

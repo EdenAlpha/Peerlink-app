@@ -11,28 +11,44 @@ import com.google.mlkit.vision.text.Text
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import com.peerlink.app.core.AppState
+import com.peerlink.app.core.MatchStats
 import com.peerlink.app.godmode.PrimeClient
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 /**
- * Very small, on-device eFootball final-score reader.
+ * F33 on-device eFootball final-score reader.
  *
- * Prime v4 performs the expensive full-display screenshot in the privileged
- * process and returns only the two narrow score-bearing bands. The app therefore
- * decodes/OCRs roughly a third of a frame instead of a complete game frame.
- * ML Kit is kept as the recognizer because it is substantially more tolerant of
- * eFootball font/rendering changes than fixed digit templates, while geometry +
- * screen anchors keep false positives out of the statistics table.
+ * Primary path: Prime v6 delivers a full-display JPEG (`__fullcap_jpeg__`);
+ * [ScoreBoardDetector] first classifies the frame from pure colour structure
+ * (hue-60 yellow / navy / dark menu) and rejects non-score frames in a few
+ * milliseconds, then reads score digits — and the 13 statistics rows on the
+ * statistics board — from fixed game-UI geometry against a template bank of
+ * real eFootball glyphs. A read costs ~5-25 ms instead of the ~1.5 s the old
+ * ML Kit chain needed, and the previous hue-window bug (the old reader
+ * filtered hue 15..45° while eFootball draws its yellow at ~60°, so it never
+ * read a single frame in the field) cannot recur.
+ *
+ * ML Kit is retained only as a last-resort fallback when the pixel engine
+ * cannot find the digits on a frame the gate classified as a score screen;
+ * the resident pre-v6 PrimeServer band composite is still supported for
+ * score-only reads until Prime is redeployed.
  */
 object PrimeScreenScoreDetector {
-    data class Score(val home: Int, val away: Int, val source: String, val finalScreen: Boolean = false)
+    data class Score(
+        val home: Int,
+        val away: Int,
+        val source: String,
+        val finalScreen: Boolean = false,
+        val stats: MatchStats? = null,
+    )
 
     class CapturedFrame internal constructor(
         val bitmap: Bitmap,
         val topHeight: Int,
         val gap: Int,
         val referenceHeight: Int,
+        val geometry: ScoreBoardDetector.Geometry,
     ) {
         fun recycle() {
             if (!bitmap.isRecycled) bitmap.recycle()
@@ -46,16 +62,34 @@ object PrimeScreenScoreDetector {
         TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
     }
 
-    /** Capture only. Kept separate so the 4 Hz producer is not blocked by OCR. */
+    /** Capture only. Kept separate so the 4 Hz producer is not blocked by reads. */
     fun captureFrame(context: Context): CapturedFrame? {
-        // Preferred path: Prime crops/scales before the bytes cross loopback.
+        // Preferred path: v6 full display JPEG (statistics table included).
+        PrimeClient.captureFullFrame()?.let { frame ->
+            val bitmap = BitmapFactory.decodeByteArray(frame.bytes, 0, frame.bytes.size) ?: return@let
+            return CapturedFrame(
+                bitmap,
+                topHeight = bitmap.height,
+                gap = 0,
+                referenceHeight = bitmap.height,
+                geometry = ScoreBoardDetector.Geometry.Full,
+            )
+        }
+
+        // v4/v5 composite: central 22..78% width, top 0..32% + bottom 70..100%.
         PrimeClient.captureScoreFrame()?.let { frame ->
             val bitmap = BitmapFactory.decodeByteArray(frame.bytes, 0, frame.bytes.size) ?: return@let
             if (frame.topHeight <= 0 || frame.gap < 0 || frame.topHeight.toLong() + frame.gap >= bitmap.height || frame.referenceHeight <= 0) {
                 bitmap.recycle()
                 return@let
             }
-            return CapturedFrame(bitmap, frame.topHeight, frame.gap, frame.referenceHeight)
+            return CapturedFrame(
+                bitmap,
+                frame.topHeight,
+                frame.gap,
+                frame.referenceHeight,
+                ScoreBoardDetector.Geometry.Composite(frame.topHeight, frame.gap, frame.referenceHeight),
+            )
         }
 
         // A slow v4/v5 capture must not trigger two extra full screenshots.
@@ -63,23 +97,76 @@ object PrimeScreenScoreDetector {
         if (PrimeClient.protocolVersion >= 4) return null
 
         // A v3 Prime daemon can survive an APK update until reboot/recovery.
-        // Keep it usable by taking the old full PNG and cropping locally.
+        // Keep it usable by taking the old full PNG.
         val png = PrimeClient.captureScreenPng() ?: captureViaLegacyPrime(context) ?: return null
         val source = BitmapFactory.decodeByteArray(png, 0, png.size) ?: return null
-        return try {
-            makeComposite(source)
-        } finally {
-            if (!source.isRecycled) source.recycle()
-        }
+        return CapturedFrame(
+            source,
+            topHeight = source.height,
+            gap = 0,
+            referenceHeight = source.height,
+            geometry = ScoreBoardDetector.Geometry.Full,
+        )
     }
 
     /**
-     * Recognize only the isolated score glyphs plus two tiny Full-Time text
-     * strips. One ML Kit pass is therefore enough for both the score and the
-     * finality signal; the full composite is never OCRed.
+     * Two-stage read: colour gate first (sub-10 ms reject for non-score
+     * frames), then the fixed-geometry pixel reader. ML Kit only runs when the
+     * pixel engine cannot resolve digits on a frame the gate believed to be a
+     * score screen — a rare degraded-capture path.
      */
     fun detectFrame(frame: CapturedFrame): Score? {
-        val prepared = ScoreVisualPreprocessor.prepare(frame.bitmap, frame.referenceHeight) ?: return null
+        val detection = ScoreBoardDetector.analyze(frame.bitmap, frame.geometry)
+            ?: return null
+        if (detection.type == ScoreBoardDetector.ScreenType.OTHER) return null
+        val score = detection.score
+        if (score != null) {
+            val stats = detection.stats
+            val matchStats = stats?.let { s ->
+                com.peerlink.app.core.MatchStats(s.rows.map {
+                    com.peerlink.app.core.MatchStatRow(it.name, it.home, it.away)
+                })
+            }
+            val source = when (detection.type) {
+                ScoreBoardDetector.ScreenType.STATS_BOARD -> "f33:board"
+                ScoreBoardDetector.ScreenType.WALKING -> "f33:walking"
+                ScoreBoardDetector.ScreenType.MENU -> "f33:menu"
+                ScoreBoardDetector.ScreenType.OTHER -> "f33"
+            }
+            AppState.appendLog(
+                "[MATCH-OCR ] F33 ${detection.type} read ${score.first}-${score.second} " +
+                    "final=${detection.finality} stats=${matchStats?.rows?.size ?: 0} rows"
+            )
+            return Score(score.first, score.second, source, detection.finalScreen, matchStats)
+        }
+        // Gate saw a score presentation but the pixel engine found no digits —
+        // degraded capture or an unknown UI skin. Fall back to the legacy ML
+        // Kit chain once before giving this frame up.
+        return detectViaMlKit(frame)
+    }
+
+    /** One-shot helper used by the manual FT button. */
+    fun captureScore(context: Context): Score? {
+        val frame = captureFrame(context) ?: return null
+        return try {
+            detectFrame(frame)
+        } finally {
+            frame.recycle()
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Legacy ML Kit fallback (previous F29 reader, unchanged semantics).
+    // ------------------------------------------------------------------
+    private fun detectViaMlKit(frame: CapturedFrame): Score? {
+        val source = if (frame.geometry is ScoreBoardDetector.Geometry.Composite) {
+            frame.bitmap
+        } else {
+            makeComposite(frame.bitmap)?.bitmap ?: return null
+        }
+        val prepared = ScoreVisualPreprocessor.prepare(source, frame.referenceHeight)
+        if (source !== frame.bitmap) source.recycle()
+        if (prepared == null) return null
         return try {
             val text = recognizeBlocking(prepared.bitmap) ?: return null
             val reading = ScoreLaneReader.read(
@@ -90,19 +177,9 @@ object PrimeScreenScoreDetector {
                 prepared.referenceHeight,
             ) ?: return null
             val finalScreen = FinalScoreEvidence.isFinal(text.text)
-            Score(reading.home, reading.away, reading.source, finalScreen)
+            Score(reading.home, reading.away, "mlkit:${reading.source}", finalScreen, null)
         } finally {
             prepared.recycle()
-        }
-    }
-
-    /** One-shot helper used by the manual FT button. */
-    fun captureScore(context: Context): Score? {
-        val frame = captureFrame(context) ?: return null
-        return try {
-            detectFrame(frame)
-        } finally {
-            frame.recycle()
         }
     }
 
@@ -138,20 +215,23 @@ object PrimeScreenScoreDetector {
 
     /** Used by tests and by pre-v4 Prime compatibility. */
     internal fun detectScore(source: Bitmap): Score? {
-        val frame = makeComposite(source) ?: return null
-        return try {
-            detectFrame(frame)
-        } finally {
-            frame.recycle()
-        }
+        val frame = CapturedFrame(
+            source,
+            topHeight = source.height,
+            gap = 0,
+            referenceHeight = source.height,
+            geometry = ScoreBoardDetector.Geometry.Full,
+        )
+        return detectFrame(frame)
     }
 
+    /**
+     * Build the legacy band composite (central 22..78% width, top 0..32% +
+     * bottom 70..100%) for the ML Kit fallback path.
+     */
     private fun makeComposite(source: Bitmap): CapturedFrame? {
         if (source.width < 400 || source.height < 240) return null
 
-        // These bands cover all three observed eFootball result presentations:
-        // top Full-Time menu, top statistics result, and the bottom walking-pitch
-        // score banner. The normal top-left in-game clock/scoreboard is excluded.
         val left = (source.width * 0.22f).toInt().coerceIn(0, source.width - 2)
         val right = (source.width * 0.78f).toInt().coerceIn(left + 1, source.width)
         val topHeight = (source.height * 0.32f).toInt().coerceAtLeast(1)
@@ -174,7 +254,13 @@ object PrimeScreenScoreDetector {
             Rect(0, topHeight + gap, width, height),
             null,
         )
-        return CapturedFrame(composite, topHeight, gap, source.height)
+        return CapturedFrame(
+            composite,
+            topHeight,
+            gap,
+            source.height,
+            ScoreBoardDetector.Geometry.Composite(topHeight, gap, source.height),
+        )
     }
 
     private fun recognizeBlocking(bitmap: Bitmap): Text? {
