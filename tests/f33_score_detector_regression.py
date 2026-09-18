@@ -124,7 +124,7 @@ check("template bank digest recorded (self-check)",
 # --- full-frame capture path (v6) ------------------------------------------
 has(PRIME_SERVER, '"__fullcap_jpeg__"', "PrimeServer: v6 full-frame command")
 has(PRIME_SERVER, "prime_ok_v6", "PrimeServer: protocol v6 health")
-has(PRIME_SERVER, "FULL_FRAME_MAX_WIDTH", "PrimeServer: full frame capped at 1280px")
+has(PRIME_SERVER, "FULL_FRAME_MAX_BYTES", "PrimeServer: full frame is JPEG-only at native size")
 has(PRIME_CLIENT, "captureFullFrame", "PrimeClient: full-frame capture API")
 has(PRIME_CLIENT, "version in 2..6", "PrimeClient: accepts v6 daemon")
 

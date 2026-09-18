@@ -43,10 +43,7 @@ object PrimeServer {
     private const val MAX_SCREENSHOT_BYTES = 12 * 1024 * 1024
     private const val MAX_SCORE_FRAME_BYTES = 2 * 1024 * 1024
     private const val SCORE_FRAME_MAX_WIDTH = 960
-    // v6: __fullcap_jpeg__ delivers a full-display JPEG (capped at 1280 px)
-    // so the F33 pixel detector can read the 13 statistics rows, which the
-    // legacy band composite physically crops away.
-    private const val FULL_FRAME_MAX_WIDTH = 1280
+    private const val FULL_FRAME_MAX_BYTES = 4 * 1024 * 1024
 
     /** Shizuku-style app_process launch command. */
     fun buildLaunchCommand(context: Context): String {
@@ -446,22 +443,12 @@ object PrimeServer {
         log("SurfaceControl score capture unavailable: ${e.javaClass.simpleName}: ${e.message}")
     }.getOrNull()
 
-    /**
-     * v6 full-display capture for the statistics reader. Identical hidden-API
-     * path as [captureDisplayFast] but capped at 1280 px so the 13 statistics
-     * rows stay legible; the F33 detector needs the whole display because the
-     * legacy band composite crops away most of the table.
-     */
     private fun captureDisplayFull(): Bitmap? = runCatching {
         val surfaceControl = Class.forName("android.view.SurfaceControl")
         val token = surfaceControl.getMethod("getInternalDisplayToken").invoke(null) ?: return null
         val builderClass = Class.forName("android.view.SurfaceControl\$DisplayCaptureArgs\$Builder")
         val ibinderClass = Class.forName("android.os.IBinder")
         val builder = builderClass.getConstructor(ibinderClass).newInstance(token)
-        runCatching {
-            builderClass.getMethod("setSize", Int::class.javaPrimitiveType, Int::class.javaPrimitiveType)
-                .invoke(builder, FULL_FRAME_MAX_WIDTH, 0)
-        }
         val args = builderClass.getMethod("build").invoke(builder)
         val capture = surfaceControl.getMethod("captureDisplay", args.javaClass).invoke(null, args) ?: return null
         val hardwareBitmap = capture.javaClass.getMethod("asBitmap").invoke(capture) as? Bitmap ?: return null
@@ -474,35 +461,20 @@ object PrimeServer {
 
     private class FullFrame(val bytes: ByteArray, val width: Int, val height: Int)
 
-    /** Scale a full display frame to the detector working size and JPEG it. */
     private fun makeFullFrame(source: Bitmap, recycleSource: Boolean = false): FullFrame? {
         if (source.width < 320 || source.height < 180) {
             if (recycleSource && !source.isRecycled) source.recycle()
             return null
         }
-        var scaled: Bitmap? = null
         return try {
-            val scale = if (source.width > FULL_FRAME_MAX_WIDTH) {
-                FULL_FRAME_MAX_WIDTH.toFloat() / source.width
-            } else 1f
-            val frameBitmap = if (scale < 0.999f) {
-                scaled = Bitmap.createScaledBitmap(
-                    source,
-                    FULL_FRAME_MAX_WIDTH,
-                    (source.height * scale).toInt().coerceAtLeast(1),
-                    true,
-                )
-                scaled!!
-            } else source
-            val out = java.io.ByteArrayOutputStream(160 * 1024)
-            if (!frameBitmap.compress(Bitmap.CompressFormat.JPEG, 88, out)) return null
-            if (out.size() !in 64..MAX_SCORE_FRAME_BYTES) return null
-            FullFrame(out.toByteArray(), frameBitmap.width, frameBitmap.height)
+            val out = java.io.ByteArrayOutputStream(256 * 1024)
+            if (!source.compress(Bitmap.CompressFormat.JPEG, 88, out)) return null
+            if (out.size() !in 64..FULL_FRAME_MAX_BYTES) return null
+            FullFrame(out.toByteArray(), source.width, source.height)
         } catch (e: Throwable) {
             log("Full frame capture failed: ${e.message}")
             null
         } finally {
-            if (scaled != null && !scaled.isRecycled) scaled.recycle()
             if (recycleSource && !source.isRecycled) source.recycle()
         }
     }
