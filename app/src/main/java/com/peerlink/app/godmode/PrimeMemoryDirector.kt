@@ -3,6 +3,8 @@ package com.peerlink.app.godmode
 import android.content.Context
 import android.os.Process
 import com.peerlink.app.core.AppState
+import com.peerlink.app.core.MatchPhase
+import com.peerlink.app.core.MatchTracker
 import com.peerlink.app.core.PrimeGameplayTracker
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -142,7 +144,9 @@ class PrimeMemoryDirector(
                 val top = readTopPackage()
                 currentCoroutineContext().ensureActive()
                 // A stale cached package or unreadable foreground is not permission to freeze.
-                if (top.isNotBlank() && top != GAME && !PrimeGameplayTracker.isMatchProtected()) {
+                if (top.isNotBlank() && top != GAME &&
+                    !PrimeGameplayTracker.isMatchProtected() &&
+                    MatchTracker.state.value.phase == MatchPhase.NO_MATCH) {
                     if (top.isNotBlank()) temporaryForegroundPkg = top
                     val r = execute("am freeze --sticky $GAME")
                     if (r.ok) {

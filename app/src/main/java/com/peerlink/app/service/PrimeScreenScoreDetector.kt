@@ -75,38 +75,7 @@ object PrimeScreenScoreDetector {
                 geometry = ScoreBoardDetector.Geometry.Full,
             )
         }
-
-        // v4/v5 composite: central 22..78% width, top 0..32% + bottom 70..100%.
-        PrimeClient.captureScoreFrame()?.let { frame ->
-            val bitmap = BitmapFactory.decodeByteArray(frame.bytes, 0, frame.bytes.size) ?: return@let
-            if (frame.topHeight <= 0 || frame.gap < 0 || frame.topHeight.toLong() + frame.gap >= bitmap.height || frame.referenceHeight <= 0) {
-                bitmap.recycle()
-                return@let
-            }
-            return CapturedFrame(
-                bitmap,
-                frame.topHeight,
-                frame.gap,
-                frame.referenceHeight,
-                ScoreBoardDetector.Geometry.Composite(frame.topHeight, frame.gap, frame.referenceHeight),
-            )
-        }
-
-        // A slow v4/v5 capture must not trigger two extra full screenshots.
-        if (PrimeClient.protocolVersion == 0 && !PrimeClient.isAlive()) return null
-        if (PrimeClient.protocolVersion >= 4) return null
-
-        // A v3 Prime daemon can survive an APK update until reboot/recovery.
-        // Keep it usable by taking the old full PNG.
-        val png = PrimeClient.captureScreenPng() ?: captureViaLegacyPrime(context) ?: return null
-        val source = BitmapFactory.decodeByteArray(png, 0, png.size) ?: return null
-        return CapturedFrame(
-            source,
-            topHeight = source.height,
-            gap = 0,
-            referenceHeight = source.height,
-            geometry = ScoreBoardDetector.Geometry.Full,
-        )
+        return null
     }
 
     /**

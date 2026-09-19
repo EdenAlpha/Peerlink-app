@@ -504,55 +504,7 @@ object GodModeManager {
                 AppState.primeServerAlive = false
                 updateSetupSnapshot(primeServerAlive = false)
                 _primeLinkState.value = PrimeLinkState.DEGRADED
-                val now = System.currentTimeMillis()
-                if (now - lastGuardianRecoveryAttemptMs < guardianRecoveryCooldownMs) return@launch
-                lastGuardianRecoveryAttemptMs = now
-                _primeLinkState.value = PrimeLinkState.RECOVERING
-                AppState.appendLog("[PRIME-GUARD] PrimeServer heartbeat lost — automatic recovery starting")
-
-                commandGate.withPermit {
-                    if (PrimeClient.isAlive(timeoutMs = 2_000) || isPrimeLoopbackBound()) {
-                        AppState.appendLog("[PRIME-GUARD] Engine still reachable — not relaunching")
-                        AppState.primeServerAlive = true
-                        _primeLinkState.value = PrimeLinkState.CONNECTED
-                        updateSetupSnapshot(primeServerAlive = true)
-                        return@withPermit
-                    }
-                    if (!PrimeClient.isAlive(timeoutMs = 2_000)) {
-                        val recovered = ensurePrimeServerAlive(needBootstrap = false)
-                        if (!recovered) {
-                            // Shizuku posture: back off after a failed start so the
-                            // OEM never sees rapid ADB connection attempts.
-                            guardianRecoveryCooldownMs = (guardianRecoveryCooldownMs * 2)
-                                .coerceAtMost(GUARDIAN_RECOVERY_COOLDOWN_MAX_MS)
-                            _primeLinkState.value = PrimeLinkState.DEGRADED
-                            if (active) setState(State.PRIME_MODE_ACTIVE, "Prime active · engine reconnect pending")
-                            return@withPermit
-                        }
-                    }
-
-                    guardianRecoveryCooldownMs = GUARDIAN_RECOVERY_COOLDOWN_MS
-                    _primeLinkState.value = PrimeLinkState.CONNECTED
-                    AppState.primeServerAlive = true
-                    updateSetupSnapshot(primeServerAlive = true)
-                    if (AppState.isGodModeActive.get()) {
-                        ensurePerformanceEngines()
-                        memoryDirector?.start()
-                        autoTuner?.start()
-                        val savedScale = getRenderScale()
-                        if (_capabilities.value.gameDownscale && savedScale != "1.00") {
-                            val applied = autoTuner?.applyScale(savedScale) == true
-                            AppState.appendLog("[PRIME-GUARD] Re-applied saved render scale $savedScale verified=$applied")
-                        }
-                        setState(State.PRIME_MODE_ACTIVE, "Prime Mode active · engine recovered")
-                        AppState.appendLog("[PRIME-GUARD] PrimeServer recovered without user action")
-                    } else if (prefs().getBoolean(KEY_RESTORE_PENDING, false)) {
-                        if (restoreExactSettingsNow()) {
-                            setState(State.PAIRED_IDLE, "Recovered engine and restored interrupted Prime settings")
-                            LanLinkForegroundService.stop(appContext)
-                        }
-                    }
-                }
+                AppState.appendLog("[PRIME-GUARD] PrimeServer not reachable — waiting for user Activate (no ADB relaunch)")
             } catch (t: Throwable) {
                 _primeLinkState.value = PrimeLinkState.DEGRADED
                 AppState.appendLog("[PRIME-GUARD] Recovery pulse failed: ${t.message}")
