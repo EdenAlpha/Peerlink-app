@@ -449,10 +449,6 @@ object PrimeServer {
         val builderClass = Class.forName("android.view.SurfaceControl\$DisplayCaptureArgs\$Builder")
         val ibinderClass = Class.forName("android.os.IBinder")
         val builder = builderClass.getConstructor(ibinderClass).newInstance(token)
-        runCatching {
-            builderClass.getMethod("setSize", Int::class.javaPrimitiveType, Int::class.javaPrimitiveType)
-                .invoke(builder, 1280, 0)
-        }
         val args = builderClass.getMethod("build").invoke(builder)
         val capture = surfaceControl.getMethod("captureDisplay", args.javaClass).invoke(null, args) ?: return null
         val hardwareBitmap = capture.javaClass.getMethod("asBitmap").invoke(capture) as? Bitmap ?: return null

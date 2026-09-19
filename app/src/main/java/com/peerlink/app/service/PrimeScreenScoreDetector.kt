@@ -55,8 +55,6 @@ object PrimeScreenScoreDetector {
         }
     }
 
-    private const val ANALYZE_MAX_SIDE = 1280
-
     private val ocrInFlight = java.util.concurrent.atomic.AtomicBoolean(false)
     private val completionExecutor = java.util.concurrent.Executor { it.run() }
 
@@ -68,8 +66,12 @@ object PrimeScreenScoreDetector {
     fun captureFrame(context: Context): CapturedFrame? {
         // Preferred path: v6 full display JPEG (statistics table included).
         PrimeClient.captureFullFrame()?.let { frame ->
-            val decoded = BitmapFactory.decodeByteArray(frame.bytes, 0, frame.bytes.size) ?: return@let
-            val bitmap = scaleForAnalyze(decoded)
+            val bitmap = BitmapFactory.decodeByteArray(frame.bytes, 0, frame.bytes.size)
+            if (bitmap == null) {
+                AppState.appendLog("[MATCH-CAP ] fullcap decode failed bytes=${frame.bytes.size} ${frame.width}x${frame.height}")
+                return@let
+            }
+            AppState.appendLog("[MATCH-CAP ] frame=full ${bitmap.width}x${bitmap.height} jpeg=${frame.bytes.size}")
             return CapturedFrame(
                 bitmap,
                 topHeight = bitmap.height,
@@ -78,22 +80,39 @@ object PrimeScreenScoreDetector {
                 geometry = ScoreBoardDetector.Geometry.Full,
             )
         }
-        return null
-    }
 
-    private fun scaleForAnalyze(source: Bitmap): Bitmap {
-        val longSide = maxOf(source.width, source.height)
-        if (longSide <= ANALYZE_MAX_SIDE) return source
-        val scale = ANALYZE_MAX_SIDE.toFloat() / longSide.toFloat()
-        val width = (source.width * scale).toInt().coerceAtLeast(1)
-        val height = (source.height * scale).toInt().coerceAtLeast(1)
-        return try {
-            val scaled = Bitmap.createScaledBitmap(source, width, height, true)
-            if (scaled !== source && !source.isRecycled) source.recycle()
-            scaled
-        } catch (_: Exception) {
-            source
+        // v4/v5 composite: central 22..78% width, top 0..32% + bottom 70..100%.
+        PrimeClient.captureScoreFrame()?.let { frame ->
+            val bitmap = BitmapFactory.decodeByteArray(frame.bytes, 0, frame.bytes.size) ?: return@let
+            if (frame.topHeight <= 0 || frame.gap < 0 || frame.topHeight.toLong() + frame.gap >= bitmap.height || frame.referenceHeight <= 0) {
+                bitmap.recycle()
+                return@let
+            }
+            AppState.appendLog("[MATCH-CAP ] frame=scorecap ${bitmap.width}x${bitmap.height} top=${frame.topHeight} gap=${frame.gap}")
+            return CapturedFrame(
+                bitmap,
+                frame.topHeight,
+                frame.gap,
+                frame.referenceHeight,
+                ScoreBoardDetector.Geometry.Composite(frame.topHeight, frame.gap, frame.referenceHeight),
+            )
         }
+
+        // A slow v4/v5 capture must not trigger two extra full screenshots.
+        if (PrimeClient.protocolVersion == 0 && !PrimeClient.isAlive()) return null
+        if (PrimeClient.protocolVersion >= 4) return null
+
+        // A v3 Prime daemon can survive an APK update until reboot/recovery.
+        // Keep it usable by taking the old full PNG.
+        val png = PrimeClient.captureScreenPng() ?: captureViaLegacyPrime(context) ?: return null
+        val source = BitmapFactory.decodeByteArray(png, 0, png.size) ?: return null
+        return CapturedFrame(
+            source,
+            topHeight = source.height,
+            gap = 0,
+            referenceHeight = source.height,
+            geometry = ScoreBoardDetector.Geometry.Full,
+        )
     }
 
     /**
@@ -102,15 +121,18 @@ object PrimeScreenScoreDetector {
      * pixel engine cannot resolve digits on a frame the gate believed to be a
      * score screen — a rare degraded-capture path.
      */
-    fun detectFrame(frame: CapturedFrame, allowMlKit: Boolean = true): Score? {
+    fun detectFrame(frame: CapturedFrame): Score? {
+        val startedAt = android.os.SystemClock.elapsedRealtime()
         val detection = try {
             ScoreBoardDetector.analyze(frame.bitmap, frame.geometry)
-        } catch (_: Exception) {
+        } catch (error: Exception) {
+            AppState.appendLog("[MATCH-OCR ] analyze crashed ${error.javaClass.simpleName}: ${error.message} ${frame.bitmap.width}x${frame.bitmap.height}")
             null
         } ?: return null
+        val analyzeMs = android.os.SystemClock.elapsedRealtime() - startedAt
         if (detection.type == ScoreBoardDetector.ScreenType.OTHER) {
-            AppState.appendLog("[MATCH-OCR ] F33 OTHER ${detection.gateInfo} ${frame.bitmap.width}x${frame.bitmap.height}")
-            return if (allowMlKit) detectViaMlKit(frame) else null
+            AppState.appendLog("[MATCH-OCR ] F33 OTHER ${detection.gateInfo} ${frame.bitmap.width}x${frame.bitmap.height} ${analyzeMs}ms")
+            return null
         }
         val score = detection.score
         if (score != null) {
@@ -128,12 +150,18 @@ object PrimeScreenScoreDetector {
             }
             AppState.appendLog(
                 "[MATCH-OCR ] F33 ${detection.type} read ${score.first}-${score.second} " +
-                    "final=${detection.finality} stats=${matchStats?.rows?.size ?: 0} rows"
+                    "final=${detection.finality} stats=${matchStats?.rows?.size ?: 0} rows " +
+                    "${detection.gateInfo} ${frame.bitmap.width}x${frame.bitmap.height} ${analyzeMs}ms"
             )
             return Score(score.first, score.second, source, detection.finalScreen, matchStats)
         }
-        if (!allowMlKit || detection.type == ScoreBoardDetector.ScreenType.MENU) return null
-        return detectViaMlKit(frame)
+        AppState.appendLog("[MATCH-OCR ] F33 ${detection.type} no digits ${detection.gateInfo} — trying ML Kit")
+        val ml = detectViaMlKit(frame)
+        AppState.appendLog(
+            if (ml == null) "[MATCH-OCR ] ML Kit produced no score"
+            else "[MATCH-OCR ] ML Kit ${ml.home}-${ml.away} source=${ml.source} final=${ml.finalScreen}"
+        )
+        return ml
     }
 
     /** One-shot helper used by the manual FT button. */

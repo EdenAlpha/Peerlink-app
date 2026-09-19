@@ -5,6 +5,7 @@ import android.net.wifi.WifiManager
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
+import android.widget.Toast
 import com.peerlink.app.core.AppState
 import com.peerlink.app.core.MatchTracker
 import com.peerlink.app.godmode.PrimeClient
@@ -79,7 +80,6 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
     private const val PAUSE_WINDOW_MS = 1_500L
     /** Path A tail budget after a confirmed cliff. */
     private const val PATH_A_TAIL_MS = 7_000L
-    private const val STATS_HUNT_MAX_MS = 45_000L
 
     /** A poll at or below this reads as the cliff (game feed dead). */
     private const val ZERO_PPS_THRESHOLD = 1
@@ -102,8 +102,6 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
         PATH_A_PAUSE,
         /** Deep PPS collapse without 54B (<=10s); any 54B inside is ignored. */
         PATH_B,
-        /** Score locked; keep filming until stats arrive or eFootball leaves. */
-        STATS_HUNT,
     }
 
     private val lock = Any()
@@ -134,6 +132,7 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
     private var captureJob: Job? = null
     private var sessionGeneration = 0L
     private var captureGeneration = 0L
+    private val manualCaptureBusy = java.util.concurrent.atomic.AtomicBoolean(false)
     private var lastAutoCandidate: PrimeScreenScoreDetector.Score? = null
     private var autoCandidateHits = 0
 
@@ -147,7 +146,6 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
     private var disconnectResolved = false
 
     private var scoreConfirmed = false
-    private var statsComplete = false
     private var scoreConfirmedAtMs = 0L
     private var rematchNormalSinceMs = 0L
     private var rematchNormalSamples = 0
@@ -219,44 +217,6 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
                 } else {
                     rematchNormalSinceMs = 0L
                     rematchNormalSamples = 0
-                }
-                if (captureMode == null || statsComplete) return@synchronized
-                when (val mode = captureMode) {
-                    CaptureMode.PATH_A_WATCH -> {
-                        if (signal <= ZERO_PPS_THRESHOLD) {
-                            enterModeLocked(CaptureMode.PATH_A_TAIL, now)
-                            logCapture = "[MATCH-CAP ] Path A cliff confirmed (pps=$signal) -> tail capture <= ${PATH_A_TAIL_MS / 1000}s"
-                        } else if (now - modeStartedAtMs >= ZERO_PPS_CONFIRM_MS) {
-                            enterModeLocked(CaptureMode.STATS_HUNT, now)
-                            startProducer = captureJob == null
-                            logCapture = "[MATCH-CAP ] Path A ended — keep capturing until stats or eFootball leaves"
-                        }
-                    }
-                    CaptureMode.PATH_A_TAIL, CaptureMode.PATH_A_PAUSE, CaptureMode.PATH_B -> {
-                        if (signal >= GAMEPLAY_PPS_MIN) {
-                            endModeLocked()
-                            logCapture = "[MATCH-CAP ] Gameplay recovered after score lock -> capture ended"
-                        } else if (mode == CaptureMode.PATH_A_TAIL && now - modeStartedAtMs >= PATH_A_TAIL_MS ||
-                            mode == CaptureMode.PATH_A_PAUSE && now - modeStartedAtMs >= PAUSE_WINDOW_MS ||
-                            mode == CaptureMode.PATH_B && now - modeStartedAtMs >= PATH_B_MAX_MS
-                        ) {
-                            enterModeLocked(CaptureMode.STATS_HUNT, now)
-                            startProducer = captureJob == null
-                            logCapture = "[MATCH-CAP ] Keep capturing until stats or eFootball leaves"
-                        }
-                    }
-                    CaptureMode.STATS_HUNT -> {
-                        if (signal >= GAMEPLAY_PPS_MIN) {
-                            endModeLocked()
-                            logCapture = "[MATCH-CAP ] Gameplay returned during stats hunt -> capture ended"
-                        } else if (now - modeStartedAtMs >= STATS_HUNT_MAX_MS) {
-                            endModeLocked()
-                            logCapture = "[MATCH-CAP ] Stats hunt window closed"
-                        } else if (captureJob == null) {
-                            startProducer = true
-                        }
-                    }
-                    null -> Unit
                 }
                 return@synchronized
             }
@@ -349,13 +309,8 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
                         endModeLocked()
                         logCapture = "[MATCH-CAP ] Gameplay recovered after cliff watch -> capture ended"
                     } else if (now - modeStartedAtMs >= PATH_A_TAIL_MS) {
-                        if (!statsComplete) {
-                            enterModeLocked(CaptureMode.STATS_HUNT, now)
-                            logCapture = "[MATCH-CAP ] Path A ended — keep capturing until stats or eFootball leaves"
-                        } else {
-                            endModeLocked()
-                            logCapture = "[MATCH-CAP ] Path A tail window closed without a verified score"
-                        }
+                        endModeLocked()
+                        logCapture = "[MATCH-CAP ] Path A tail window closed without a verified score"
                     }
                 }
                 CaptureMode.PATH_A_PAUSE -> {
@@ -364,13 +319,8 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
                         enterModeLocked(CaptureMode.PATH_A_TAIL, now)
                         logCapture = "[MATCH-CAP ] Delayed cliff reached 0pps -> capture resumed, tail <= ${PATH_A_TAIL_MS / 1000}s"
                     } else if (now - modeStartedAtMs >= PAUSE_WINDOW_MS) {
-                        if (!statsComplete) {
-                            enterModeLocked(CaptureMode.STATS_HUNT, now)
-                            logCapture = "[MATCH-CAP ] Keep capturing until stats or eFootball leaves"
-                        } else {
-                            endModeLocked()
-                            logCapture = "[MATCH-CAP ] No 0pps within pause window -> 54B was noise; capture ended"
-                        }
+                        endModeLocked()
+                        logCapture = "[MATCH-CAP ] No 0pps within pause window -> 54B was noise; capture ended"
                     }
                 }
                 CaptureMode.PATH_B -> {
@@ -380,24 +330,10 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
                         endModeLocked()
                         logCapture = "[MATCH-CAP ] Gameplay recovered (pps=$signal) -> Path B capture ended"
                     } else if (now - modeStartedAtMs >= PATH_B_MAX_MS) {
-                        if (!statsComplete) {
-                            enterModeLocked(CaptureMode.STATS_HUNT, now)
-                            logCapture = "[MATCH-CAP ] Path B ended — keep capturing until stats or eFootball leaves"
-                        } else {
-                            endModeLocked()
-                            pathBTriggerSinceMs = 0L
-                            pathBCooldownUntilMs = now + 20_000L
-                            logCapture = "[MATCH-CAP ] Path B window closed without a verified score"
-                        }
-                    }
-                }
-                CaptureMode.STATS_HUNT -> {
-                    if (signal >= GAMEPLAY_PPS_MIN) {
                         endModeLocked()
-                        logCapture = "[MATCH-CAP ] Gameplay returned during stats hunt -> capture ended"
-                    } else if (now - modeStartedAtMs >= STATS_HUNT_MAX_MS) {
-                        endModeLocked()
-                        logCapture = "[MATCH-CAP ] Stats hunt window closed"
+                        pathBTriggerSinceMs = 0L
+                        pathBCooldownUntilMs = now + 20_000L
+                        logCapture = "[MATCH-CAP ] Path B window closed without a verified score"
                     }
                 }
             }
@@ -523,7 +459,78 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
         AppState.appendLog("[MATCH-AUTO] Peer forfeit received reason=$reason -> local 3-0")
     }
 
+    fun manualFullTimeCapture() {
+        val context = appContext ?: return
+        val generation = synchronized(lock) {
+            if (!started || !rolesLocked || scoreConfirmed || gameplayT0Ms <= 0L) return
+            sessionGeneration
+        }
+        if (!manualCaptureBusy.compareAndSet(false, true)) return
+        AppState.appendLog("[MATCH-FT  ] Manual FT tap")
+        scope.launch {
+            try {
+                val candidate = confirmedCandidate()
+                when (PrimeClient.isPackageForeground(EFOOTBALL_PACKAGE)) {
+                    false -> {
+                        if (candidate != null && commitDetectedScore(candidate, "manual-candidate", generation)) {
+                            AppState.appendLog("[MATCH-FT  ] Confirmed toasted candidate ${candidate.home}-${candidate.away} after leaving eFootball")
+                            return@launch
+                        }
+                        var forfeited = false
+                        synchronized(lock) {
+                            if (started && sessionGeneration == generation && !scoreConfirmed) {
+                                forfeited = MatchTracker.confirmForfeit(
+                                    localPlayerLost = true,
+                                    reason = "invalid_manual_ft",
+                                )
+                                if (forfeited) {
+                                    scoreConfirmed = true
+                                    scoreConfirmedAtMs = SystemClock.elapsedRealtime()
+                                    MatchMarkerOverlay.setWaiting()
+                                }
+                            }
+                        }
+                        if (forfeited) {
+                            MatchControlChannel.sendForfeit("invalid_manual_ft")
+                            AppState.appendLog("[MATCH-FT  ] Invalid manual FT: eFootball was not foreground -> local 0-3")
+                            main.post {
+                                Toast.makeText(
+                                    context,
+                                    "Invalid FT claim. Match forfeited 0–3.",
+                                    Toast.LENGTH_LONG,
+                                ).show()
+                            }
+                        } else {
+                            main.post { Toast.makeText(context, "Open eFootball and try FT again", Toast.LENGTH_SHORT).show() }
+                        }
+                        return@launch
+                    }
+                    null -> {
+                        if (candidate != null && commitDetectedScore(candidate, "manual-candidate", generation)) return@launch
+                        main.post { Toast.makeText(context, "Could not verify eFootball is foreground — try FT again", Toast.LENGTH_SHORT).show() }
+                        return@launch
+                    }
+                    true -> Unit
+                }
 
+                val captured = PrimeScreenScoreDetector.captureScore(context)
+                val score = captured ?: candidate
+                if (score == null) {
+                    main.post { Toast.makeText(context, "Final score not visible — keep the result visible and retry", Toast.LENGTH_SHORT).show() }
+                    return@launch
+                }
+                val mode = if (captured != null) "manual" else "manual-candidate"
+                commitDetectedScore(score, mode, generation)
+            } finally {
+                manualCaptureBusy.set(false)
+            }
+        }
+    }
+
+    private fun confirmedCandidate(): PrimeScreenScoreDetector.Score? = synchronized(lock) {
+        val score = lastAutoCandidate
+        if (score != null && autoCandidateHits >= 2) score else null
+    }
 
     /**
      * One producer/consumer capture burst. The producer is a pure follower:
@@ -536,11 +543,10 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
     private fun startAutoCapture() {
         val context = appContext ?: return
         val (generation, burst) = synchronized(lock) {
-            if (captureMode == null || !started || statsComplete || captureJob != null) return
-            if (!scoreConfirmed) {
-                lastAutoCandidate = null
-                autoCandidateHits = 0
-            }
+            val mode = captureMode ?: return
+            if (!started || scoreConfirmed || captureJob != null) return
+            lastAutoCandidate = null
+            autoCandidateHits = 0
             sessionGeneration to ++captureGeneration
         }
         val job = scope.launch(start = CoroutineStart.LAZY) {
@@ -555,32 +561,42 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
             // available frame. Capacity stays at one, so memory cannot grow if
             // OCR briefly takes longer than a frame interval.
             val frames = Channel<PrimeScreenScoreDetector.CapturedFrame>(capacity = 1)
+            var captured = 0
             var capturedOk = 0
             var capturedNull = 0
             var dropped = 0
             var analyzed = 0
-                    val ocrJob = launch {
+            var confirmationPrompted = false
+            val ocrJob = launch {
                 for (frame in frames) {
                     try {
                         analyzed++
-                        val startedAt = SystemClock.elapsedRealtime()
-                        val score = PrimeScreenScoreDetector.detectFrame(frame, allowMlKit = true)
-                        val analyzeMs = SystemClock.elapsedRealtime() - startedAt
-                        if (analyzeMs >= 200L) {
-                            AppState.appendLog("[MATCH-OCR ] analyze ${analyzeMs}ms ${frame.bitmap.width}x${frame.bitmap.height}")
-                        }
+                        val score = PrimeScreenScoreDetector.detectFrame(frame)
                         val stillValid = synchronized(lock) {
-                            started && sessionGeneration == generation && !statsComplete &&
+                            started && sessionGeneration == generation && !scoreConfirmed &&
                                 captureGeneration == burst && captureJob != null && captureMode != null
                         }
-                        if (stillValid && score != null && registerAutomaticCandidate(score, generation, burst)) {
-                            if (!scoreConfirmed) {
-                                commitDetectedScore(score, "auto", generation, burst)
+                        if (!stillValid) {
+                            AppState.appendLog("[MATCH-OCR ] drop stale frame score=${score?.home}-${score?.away}")
+                        } else if (score != null && registerAutomaticCandidate(score, generation, burst)) {
+                            val efootball = PrimeClient.isPackageForeground(EFOOTBALL_PACKAGE)
+                            AppState.appendLog("[MATCH-OCR ] candidate ${score.home}-${score.away} src=${score.source} final=${score.finalScreen} efootball=$efootball hits=$autoCandidateHits")
+                            if (efootball == true) {
+                                if (score.finalScreen) {
+                                    if (commitDetectedScore(score, "auto", generation, burst)) break
+                                } else if (!confirmationPrompted) {
+                                    confirmationPrompted = true
+                                    AppState.appendLog("[MATCH-OCR ] Score ${score.home}-${score.away} read; final-time context unclear, awaiting FT tap")
+                                    main.post {
+                                        val valid = synchronized(lock) { started && sessionGeneration == generation && !scoreConfirmed }
+                                        if (valid) Toast.makeText(context,
+                                            "Score ${score.home}–${score.away} found. If the match has ended, tap FT to confirm.",
+                                            Toast.LENGTH_LONG).show()
+                                    }
+                                }
                             }
-                            if (score.stats != null && score.stats.rows.size >= 4) {
-                                attachDetectedStats(score, generation)
-                            }
-                            if (statsComplete) break
+                        } else if (score != null) {
+                            AppState.appendLog("[MATCH-OCR ] candidate rejected ${score.home}-${score.away} src=${score.source} hits=$autoCandidateHits roles=$rolesLocked")
                         }
                     } finally {
                         frame.recycle()
@@ -589,43 +605,20 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
             }
 
             var nextFrameAt = SystemClock.elapsedRealtime()
-            var lastForegroundCheckMs = 0L
-            var efootballGoneHits = 0
             try {
                 while (isActive) {
                     val modeNow = synchronized(lock) {
                         if (!started || sessionGeneration != generation ||
-                            captureGeneration != burst || statsComplete || captureJob == null
+                            captureGeneration != burst || scoreConfirmed || captureJob == null
                         ) null else captureMode
                     }
                     if (modeNow == null) break
-                    if (modeNow == CaptureMode.STATS_HUNT) {
-                        val nowFg = SystemClock.elapsedRealtime()
-                        if (nowFg - lastForegroundCheckMs >= 2_000L) {
-                            lastForegroundCheckMs = nowFg
-                            val resumed = PrimeClient.resumedPackages()
-                            val efootballFront = resumed?.contains(EFOOTBALL_PACKAGE)
-                            val peerlinkFront = resumed?.any { it.startsWith("com.peerlink.app") }
-                            when {
-                                efootballFront == true || peerlinkFront == true -> efootballGoneHits = 0
-                                efootballFront == false && peerlinkFront == false -> {
-                                    efootballGoneHits++
-                                    if (efootballGoneHits >= 3) {
-                                        synchronized(lock) { endModeLocked() }
-                                        AppState.appendLog("[MATCH-CAP ] eFootball left foreground — stats hunt ended")
-                                        break
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    if (modeNow != null) {
+                    if (modeNow != CaptureMode.PATH_A_PAUSE) {
                         val frame = PrimeScreenScoreDetector.captureFrame(context)
+                        captured++
                         if (frame != null) {
                             capturedOk++
                             if (frames.trySend(frame).isFailure) {
-                                // Keep only the newest pending frame. One frame may
-                                // be in OCR and one may wait; memory never grows.
                                 frames.tryReceive().getOrNull()?.recycle()
                                 dropped++
                                 if (frames.trySend(frame).isFailure) frame.recycle()
@@ -642,14 +635,17 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
             } finally {
                 withContext(NonCancellable) {
                     frames.close()
+                    ocrJob.cancel()
                     ocrJob.join()
+                    // A capacity-1 channel may still contain one unconsumed
+                    // frame when the mode ends or a score is confirmed.
                     while (true) {
                         val leftover = frames.tryReceive().getOrNull() ?: break
                         leftover.recycle()
                     }
                     AppState.appendLog(
-                        "[MATCH-CAP ] Capture burst ended ok=$capturedOk null=$capturedNull dropped=$dropped analyzed=$analyzed " +
-                            "scoreConfirmed=${synchronized(lock) { scoreConfirmed }}"
+                        "[MATCH-CAP ] Capture burst ended captured=$captured ok=$capturedOk null=$capturedNull dropped=$dropped analyzed=$analyzed " +
+                            "scoreConfirmed=${synchronized(lock) { scoreConfirmed }} last=${lastAutoCandidate?.home}-${lastAutoCandidate?.away} hits=$autoCandidateHits"
                     )
                     clearCaptureJob(burst)
                 }
@@ -667,21 +663,7 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
 
     private fun registerAutomaticCandidate(score: PrimeScreenScoreDetector.Score, generation: Long, burst: Long): Boolean = synchronized(lock) {
         if (!started || sessionGeneration != generation || captureGeneration != burst || !rolesLocked) return@synchronized false
-        if (score.source.contains("menu")) {
-            AppState.appendLog("[MATCH-OCR ] Ignoring MENU ${score.home}-${score.away} for auto-lock")
-            return@synchronized false
-        }
-        val board = score.source.contains("board") || (score.stats?.rows?.size ?: 0) >= 4
         val previous = lastAutoCandidate
-        if (previous != null && previous.source.contains("board") &&
-            (previous.home != score.home || previous.away != score.away) && !board) {
-            return@synchronized false
-        }
-        if (board) {
-            lastAutoCandidate = score
-            autoCandidateHits = 2
-            return@synchronized true
-        }
         if (previous != null && previous.home == score.home && previous.away == score.away) {
             autoCandidateHits++
             lastAutoCandidate = score
@@ -689,6 +671,8 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
             lastAutoCandidate = score
             autoCandidateHits = 1
         }
+        // Two matching frames only cost ~250 ms but substantially reduce an OCR
+        // misread on a transition frame.
         autoCandidateHits >= 2
     }
 
@@ -699,33 +683,13 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
             val side = localSide ?: return false
             val mine = if (side == MatchControlChannel.Side.HOME) score.home else score.away
             val theirs = if (side == MatchControlChannel.Side.HOME) score.away else score.home
+            // Serialize validation and ledger commit against stop, rematch and competing OCR.
             if (!MatchTracker.confirmScreenScore(mine, theirs, "$mode:${score.source}", score.stats)) return false
             scoreConfirmed = true
             scoreConfirmedAtMs = SystemClock.elapsedRealtime()
-            if (score.stats != null && score.stats.rows.size >= 4) statsComplete = true
-            else if (captureMode != null && captureMode != CaptureMode.STATS_HUNT) {
-                enterModeLocked(CaptureMode.STATS_HUNT, SystemClock.elapsedRealtime())
-            }
             MatchMarkerOverlay.setWaiting()
         }
         AppState.appendLog("[MATCH-OCR ] Confirmed HOME ${score.home}-${score.away} AWAY ($mode)")
-        return true
-    }
-
-    private fun attachDetectedStats(score: PrimeScreenScoreDetector.Score, generation: Long): Boolean {
-        val stats = score.stats ?: return false
-        synchronized(lock) {
-            if (!started || sessionGeneration != generation || !scoreConfirmed || statsComplete) return false
-            val side = localSide ?: return false
-            val mine = if (side == MatchControlChannel.Side.HOME) score.home else score.away
-            val theirs = if (side == MatchControlChannel.Side.HOME) score.away else score.home
-            val live = MatchTracker.state.value
-            if (live.myGoals != mine || live.opponentGoals != theirs) return false
-            if (!MatchTracker.attachStats(stats)) return false
-            statsComplete = true
-            endModeLocked()
-        }
-        AppState.appendLog("[MATCH-OCR ] Stats attached ${stats.rows.size} rows")
         return true
     }
 
@@ -752,8 +716,8 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
 
     private fun onRolesLocked() {
         val mine = synchronized(lock) { localSide } ?: return
-        MatchMarkerOverlay.setWaiting()
-        AppState.appendLog("[MATCH-ROLE] Locked complementary sides: local=${mine.name} peer=${mine.opposite().name}")
+        MatchMarkerOverlay.showFullTime()
+        AppState.appendLog("[MATCH-ROLE] Locked complementary sides: local=${mine.name} peer=${mine.opposite().name}; FT enabled")
     }
 
     private fun roleConflict(reason: String) {
@@ -794,7 +758,6 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
         lowFlowSinceMs = 0L
         disconnectResolved = false
         scoreConfirmed = false
-        statsComplete = false
         scoreConfirmedAtMs = 0L
         rematchNormalSinceMs = 0L
         rematchNormalSamples = 0
@@ -807,7 +770,6 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
             sessionGeneration++
             endModeLocked()
             scoreConfirmed = false
-            statsComplete = false
             scoreConfirmedAtMs = 0L
             gameplayT0Ms = now
             lastAutoCandidate = null

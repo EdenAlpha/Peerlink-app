@@ -77,8 +77,8 @@ check("gate threshold: menu = dark+white cards+top-centre yellow ink",
       "menuInkFrac >= 0.004f" in det)
 check("gate threshold: walking = green pitch + bottom yellow band",
       "greenFrac / dil >= 0.38f" in det and "bottomBand" in det)
-check("OTHER frames are logged then may fall back to ML Kit",
-      "F33 OTHER" in DETECTOR.read_text() and "detectViaMlKit(frame)" in DETECTOR.read_text())
+check("OTHER frames are rejected before any digit work",
+      "if (detection.type == ScoreBoardDetector.ScreenType.OTHER)" in DETECTOR.read_text())
 
 # --- stage 2 geometry (fractions measured from real captures) --------------
 for needle, label in [

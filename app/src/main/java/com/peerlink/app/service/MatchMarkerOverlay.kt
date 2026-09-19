@@ -26,10 +26,12 @@ import com.peerlink.app.core.AppState
  * Small in-game match overlay.
  *
  * The old diagnostic GOAL button is intentionally gone. The overlay now has
-     * states owned by [MatchAutomationEngine]: waiting and H/A side selection.
+ * three lightweight states owned by [MatchAutomationEngine]: waiting, H/A
+ * side selection, and the manual FT fallback after both peers have locked
+ * complementary sides.
  */
 object MatchMarkerOverlay {
-    enum class Mode { WAITING, SIDE_CHOICES, HOME_SELECTED, AWAY_SELECTED }
+    enum class Mode { WAITING, SIDE_CHOICES, HOME_SELECTED, AWAY_SELECTED, FULL_TIME }
 
     private val main = Handler(Looper.getMainLooper())
     private var windowManager: WindowManager? = null
@@ -197,6 +199,10 @@ object MatchMarkerOverlay {
         setMode(if (side == MatchControlChannel.Side.HOME) Mode.HOME_SELECTED else Mode.AWAY_SELECTED)
     }
 
+    fun showFullTime() {
+        setMode(Mode.FULL_TIME)
+    }
+
     fun conflictFeedback() {
         main.post {
             stopAttention()
@@ -289,6 +295,11 @@ object MatchMarkerOverlay {
             Mode.AWAY_SELECTED -> box.addView(
                 button("A", "Confirm Away", 0xFF334D73.toInt()) {
                     MatchAutomationEngine.confirmLocalSide(MatchControlChannel.Side.AWAY)
+                }
+            )
+            Mode.FULL_TIME -> box.addView(
+                button("FT", "Capture visible full-time score", 0xFF733B49.toInt()) {
+                    MatchAutomationEngine.manualFullTimeCapture()
                 }
             )
         }
