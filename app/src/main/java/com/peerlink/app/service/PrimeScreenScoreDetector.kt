@@ -116,8 +116,11 @@ object PrimeScreenScoreDetector {
      * score screen — a rare degraded-capture path.
      */
     fun detectFrame(frame: CapturedFrame): Score? {
-        val detection = ScoreBoardDetector.analyze(frame.bitmap, frame.geometry)
-            ?: return null
+        val detection = try {
+            ScoreBoardDetector.analyze(frame.bitmap, frame.geometry)
+        } catch (_: Exception) {
+            null
+        } ?: return null
         if (detection.type == ScoreBoardDetector.ScreenType.OTHER) return null
         val score = detection.score
         if (score != null) {

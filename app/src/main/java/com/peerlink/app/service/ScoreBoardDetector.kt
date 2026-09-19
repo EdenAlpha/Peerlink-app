@@ -812,7 +812,10 @@ internal object ScoreBoardDetector {
             val sw = c.x1 - c.x0 + 1
             val sub = BooleanArray(sw * c.h)
             for (y in 0 until c.h) for (x in 0 until sw) {
-                sub[y * sw + x] = ink[(c.y0 - iy0 + y) * ww + (c.x0 - ix0 + x)]
+                val srcY = c.y0 + y
+                val srcX = c.x0 + x
+                if (srcY !in 0 until hh || srcX !in 0 until ww) return null
+                sub[y * sw + x] = ink[srcY * ww + srcX]
             }
             for ((piece, pw, ph) in splitWide(sub, sw, c.h, (1.30f * c.h).toInt())) {
                 val rd = classifyGlyph(piece, pw, ph)
@@ -874,9 +877,13 @@ internal object ScoreBoardDetector {
         if (cands.isEmpty()) return Finality.UNKNOWN
         val c = cands.minByOrNull { it.x0 } ?: return Finality.UNKNOWN
         val cw = c.x1 - c.x0 + 1; val ch = c.y1 - c.y0 + 1
+        val stripW = x1 - x0 + 1
         val sub = BooleanArray(cw * ch)
         for (y in 0 until ch) for (x in 0 until cw) {
-            sub[y * cw + x] = ink[(c.y0 - top + y) * (x1 - x0 + 1) + (c.x0 - x0 + x)]
+            val srcY = c.y0 + y
+            val srcX = c.x0 + x
+            if (srcY !in 0 until stripH || srcX !in 0 until stripW) return Finality.UNKNOWN
+            sub[y * cw + x] = ink[srcY * stripW + srcX]
         }
         return classifyFH(sub, cw, ch)
     }
