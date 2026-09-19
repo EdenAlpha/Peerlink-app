@@ -55,6 +55,8 @@ object PrimeScreenScoreDetector {
         }
     }
 
+    private const val ANALYZE_MAX_SIDE = 1280
+
     private val ocrInFlight = java.util.concurrent.atomic.AtomicBoolean(false)
     private val completionExecutor = java.util.concurrent.Executor { it.run() }
 
@@ -66,7 +68,8 @@ object PrimeScreenScoreDetector {
     fun captureFrame(context: Context): CapturedFrame? {
         // Preferred path: v6 full display JPEG (statistics table included).
         PrimeClient.captureFullFrame()?.let { frame ->
-            val bitmap = BitmapFactory.decodeByteArray(frame.bytes, 0, frame.bytes.size) ?: return@let
+            val decoded = BitmapFactory.decodeByteArray(frame.bytes, 0, frame.bytes.size) ?: return@let
+            val bitmap = scaleForAnalyze(decoded)
             return CapturedFrame(
                 bitmap,
                 topHeight = bitmap.height,
@@ -78,13 +81,28 @@ object PrimeScreenScoreDetector {
         return null
     }
 
+    private fun scaleForAnalyze(source: Bitmap): Bitmap {
+        val longSide = maxOf(source.width, source.height)
+        if (longSide <= ANALYZE_MAX_SIDE) return source
+        val scale = ANALYZE_MAX_SIDE.toFloat() / longSide.toFloat()
+        val width = (source.width * scale).toInt().coerceAtLeast(1)
+        val height = (source.height * scale).toInt().coerceAtLeast(1)
+        return try {
+            val scaled = Bitmap.createScaledBitmap(source, width, height, true)
+            if (scaled !== source && !source.isRecycled) source.recycle()
+            scaled
+        } catch (_: Exception) {
+            source
+        }
+    }
+
     /**
      * Two-stage read: colour gate first (sub-10 ms reject for non-score
      * frames), then the fixed-geometry pixel reader. ML Kit only runs when the
      * pixel engine cannot resolve digits on a frame the gate believed to be a
      * score screen — a rare degraded-capture path.
      */
-    fun detectFrame(frame: CapturedFrame): Score? {
+    fun detectFrame(frame: CapturedFrame, allowMlKit: Boolean = true): Score? {
         val detection = try {
             ScoreBoardDetector.analyze(frame.bitmap, frame.geometry)
         } catch (_: Exception) {
@@ -111,9 +129,7 @@ object PrimeScreenScoreDetector {
             )
             return Score(score.first, score.second, source, detection.finalScreen, matchStats)
         }
-        // Gate saw a score presentation but the pixel engine found no digits —
-        // degraded capture or an unknown UI skin. Fall back to the legacy ML
-        // Kit chain once before giving this frame up.
+        if (!allowMlKit || detection.type == ScoreBoardDetector.ScreenType.MENU) return null
         return detectViaMlKit(frame)
     }
 

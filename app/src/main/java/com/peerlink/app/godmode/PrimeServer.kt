@@ -546,5 +546,9 @@ object PrimeServer {
     }
 
     private val fmt = SimpleDateFormat("HH:mm:ss.SSS", Locale.US)
-    private fun log(msg: String) = println("[${fmt.format(Date())}][PrimeServer] $msg")
+    private fun log(msg: String) {
+        val line = "[${fmt.format(Date())}][PrimeServer] $msg"
+        println(line)
+        android.util.Log.i("PrimeServer", msg)
+    }
 }

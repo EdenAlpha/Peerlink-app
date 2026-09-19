@@ -19,8 +19,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
-import java.net.InetSocketAddress
-import java.net.ServerSocket
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -494,7 +492,7 @@ object GodModeManager {
         if (!guardianPulseRunning.compareAndSet(false, true)) return
         scope.launch {
             try {
-                if (PrimeClient.isAlive(timeoutMs = 2_000) || isPrimeLoopbackBound()) {
+                if (PrimeClient.isAlive(timeoutMs = 2_000)) {
                     AppState.primeServerAlive = true
                     _primeLinkState.value = PrimeLinkState.CONNECTED
                     updateSetupSnapshot(primeServerAlive = true)
@@ -737,7 +735,6 @@ object GodModeManager {
                 }
 
                 PrimeAuth.rotate(appContext)
-                PrimeAdbKeepalive.drop()
                 activationJob?.cancel()
                 activationRequested.set(false)
                 pairingRequested.set(false)
@@ -901,8 +898,10 @@ object GodModeManager {
                 publishAction("activate", PrimeActionPhase.ERROR, "Prime activation cancelled")
                 throw cancelled
             } catch (e: Exception) {
-                AppState.appendLog("[PRIME-MODE ] Activation failed: ${e.javaClass.simpleName}")
-                setState(State.ERROR, "Prime activation failed; retry activation")
+                AppState.appendLog("[PRIME-MODE ] Activation failed: ${e.javaClass.simpleName}: ${e.message}")
+                if (_state.value != State.ERROR) {
+                    setState(State.ERROR, e.message ?: "Prime activation failed; retry activation")
+                }
                 publishAction("activate", PrimeActionPhase.ERROR, _status.value)
             } finally {
                 // Also runs if cancelled while waiting to acquire the command gate.
@@ -921,9 +920,6 @@ object GodModeManager {
     fun deactivateGodMode() {
         if (!deactivationRequested.compareAndSet(false, true)) return
         publishAction("deactivate", PrimeActionPhase.WORKING, "Restoring phone settings…")
-        // The held ADB session exists only to shield the engine; with Prime
-        // stopping, release it before restore commands run.
-        PrimeAdbKeepalive.drop()
         val inFlight = activationJob
         inFlight?.cancel()
         scope.launch {
@@ -969,28 +965,17 @@ object GodModeManager {
      * Returns true once PrimeServer is confirmed alive. Does NOT run any session
      * commands — callers decide what to do next.
      */
-    private fun isPrimeLoopbackBound(): Boolean = try {
-        ServerSocket().use {
-            it.bind(InetSocketAddress(PrimeServer.HOST, PrimeServer.PORT), 1)
-            false
-        }
-    } catch (_: Exception) {
-        true
-    }
-
     private suspend fun ensurePrimeServerAlive(needBootstrap: Boolean): Boolean {
         setState(if (needBootstrap) State.BOOTSTRAPPING else State.CONNECTING,
             if (needBootstrap) "Completing one-time Prime setup…" else "Restoring Prime Mode connection…")
         AppState.appendLog("[PRIME-MODE ] ensurePrimeServerAlive: starting (needBootstrap=$needBootstrap)")
-        if (PrimeClient.isAlive(timeoutMs = 2_000) || isPrimeLoopbackBound()) {
+        if (PrimeClient.isAlive(timeoutMs = 2_000)) {
             AppState.appendLog("[PRIME-MODE ] PrimeServer already alive — skip ADB start")
             AppState.primeServerAlive = true
             if (needBootstrap) markBootstrapped()
             startWatching()
             return true
         }
-        connectMdns?.stop()
-        connectMdns = null
 
         val result = PrimeShizukuBootstrapEngine(appContext).start(needBootstrap, connectPort) { stage ->
             _status.value = stage
@@ -999,7 +984,7 @@ object GodModeManager {
         }
         when (result) {
             is PrimeShizukuBootstrapEngine.Result.Failure -> {
-                if (PrimeClient.isAlive(timeoutMs = 2_000) || isPrimeLoopbackBound()) {
+                if (PrimeClient.isAlive(timeoutMs = 2_000)) {
                     AppState.appendLog("[PRIME-MODE ] Bootstrap reported failure but PrimeServer is alive — continuing")
                 } else {
                     AppState.appendLog("[PRIME-MODE ] Bootstrap FAILED: ${result.reason}${result.throwable?.let { " — ${it.message}" } ?: ""}")

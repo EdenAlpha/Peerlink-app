@@ -62,7 +62,7 @@ has(engine, 'autoCandidateHits >= 2', 'walking score needs two matching reads')
 has(engine, 'Ignoring MENU', 'menu digits cannot overwrite a stats-board score')
 has(engine, 'PrimeClient.isPackageForeground(EFOOTBALL_PACKAGE)', 'stats hunt stops when eFootball leaves foreground')
 has(engine, 'STATS_HUNT', 'score lock continues capture for the stats board')
-has(engine, 'if (scoreConfirmed) return', 'confirmed score blocks later disconnect settlement')
+has(engine, 'if (scoreConfirmed) {', 'confirmed score still watches rematch and stats hunt')
 lacks(engine, '"[MATCH-FT  ] Manual FT tap"', 'manual FT tap is gone')
 
 # F32: packet score detection fully removed

@@ -84,6 +84,11 @@ class BootReceiver : BroadcastReceiver() {
         Settings.Global.putInt(cr, "adb_wifi_enabled", 1)
         Settings.Global.putInt(cr, Settings.Global.ADB_ENABLED, 1)
         Settings.Global.putLong(cr, "adb_allowed_connection_time", 0L)
+        if (Settings.Global.getInt(cr, "adb_wifi_enabled", 0) != 1) {
+            Log.w(TAG, "Wireless debugging did not stay enabled after boot write")
+            AppState.appendLog("[BOOT      ] Wireless debugging did not stay enabled — skip auto start")
+            return
+        }
 
         val pending = goAsync()
         CoroutineScope(Dispatchers.IO).launch {
@@ -91,16 +96,18 @@ class BootReceiver : BroadcastReceiver() {
                 AppState.appendLog("[BOOT      ] Prime engine not running — attempting Shizuku-style auto start")
                 val result = PrimeShizukuBootstrapEngine(context).start(
                     needBootstrap = false,
+                    cachedPort = 0,
                     discoverTimeoutMs = 3_000L,
                 )
                 if (result is PrimeShizukuBootstrapEngine.Result.Success) {
                     AppState.appendLog("[BOOT      ] Prime engine auto-started via 127.0.0.1:${result.port}")
                     GodModeManager.onEngineAutoStarted(context)
                 } else {
-                    AppState.appendLog("[BOOT      ] Prime auto-start not completed; guardian will retry when possible")
+                    val reason = (result as? PrimeShizukuBootstrapEngine.Result.Failure)?.reason
+                    AppState.appendLog("[BOOT      ] Prime auto-start not completed${reason?.let { ": $it" } ?: ""}")
                 }
-            } catch (_: Exception) {
-                AppState.appendLog("[BOOT      ] Prime auto-start failed; guardian will retry when possible")
+            } catch (error: Exception) {
+                AppState.appendLog("[BOOT      ] Prime auto-start failed: ${error.message}")
             } finally {
                 pending.finish()
             }

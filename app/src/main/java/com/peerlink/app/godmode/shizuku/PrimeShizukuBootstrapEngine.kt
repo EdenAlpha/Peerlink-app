@@ -5,9 +5,11 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
 import android.provider.Settings
+import com.peerlink.app.core.AppState
 import com.peerlink.app.godmode.AdbConnectClient
 import com.peerlink.app.godmode.PeerLinkAdbManager
 import com.peerlink.app.godmode.PrimeClient
+import io.github.muntashirakon.adb.AdbPairingRequiredException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
@@ -34,6 +36,7 @@ class PrimeShizukuBootstrapEngine(private val context: Context) {
         }
         var stage = "Finding this phone's Wireless debugging connection"
         fun report(value: String) { stage = value; onStage(value) }
+        if (needBootstrap) AppState.appendLog("[PRIME-ADB] first-time bootstrap start")
         try {
             withTimeoutOrNull(45_000L) {
                 if (context.checkSelfPermission(WRITE_SECURE_SETTINGS) ==
@@ -45,72 +48,90 @@ class PrimeShizukuBootstrapEngine(private val context: Context) {
                         Settings.Global.putLong(cr, "adb_allowed_connection_time", 0L)
                     }
                 }
-                val ports = Channel<Int>(Channel.CONFLATED)
-                val adbMdns = PrimeShizukuAdbMdns(context, PrimeShizukuAdbMdns.TLS_CONNECT) { port ->
-                    if (port in 1..65535) ports.trySend(port)
+                val wifiEnabled = Settings.Global.getInt(context.contentResolver, "adb_wifi_enabled", 0) == 1
+                if (!wifiEnabled && cachedPort !in 1..65535) {
+                    return@withTimeoutOrNull Result.Failure(
+                        "Wireless debugging did not stay enabled (adb_wifi_enabled=0)"
+                    )
                 }
-                report(stage)
-                adbMdns.start()
-                try {
-                    val livePort = withTimeoutOrNull(discoverTimeoutMs) { ports.receive() } ?: 0
-                    val systemPort = adbTcpPort()
-                    val port = when {
-                        livePort in 1..65535 -> livePort
-                        cachedPort in 1..65535 -> cachedPort
-                        systemPort > 0 -> systemPort
-                        else -> 0
-                    }
-                    if (port !in 1..65535) {
-                        return@withTimeoutOrNull Result.Failure(
-                            "No local ADB endpoint found. Keep Wireless debugging enabled."
-                        )
-                    }
-                    report("Starting with wireless adb in port $port")
-                    PeerLinkAdbManager.resetInstance(context)
-                    val client = AdbConnectClient(context)
-                    try {
-                        val connected = try {
-                            client.connect("127.0.0.1", port)
-                        } catch (cancelled: CancellationException) {
-                            throw cancelled
-                        } catch (error: ConnectException) {
-                            return@withTimeoutOrNull Result.Failure(
-                                "Cannot connect to Wireless debugging port $port",
-                                error,
-                            )
-                        } catch (error: SSLProtocolException) {
-                            return@withTimeoutOrNull Result.Failure(
-                                "Prime pairing is required before activation",
-                                error,
-                            )
-                        } catch (_: Exception) {
-                            false
-                        }
-                        if (!connected) {
-                            return@withTimeoutOrNull Result.Failure(
-                                "ADB connection was not accepted. Check Wireless debugging and pairing."
-                            )
-                        }
-                        val output = client.shellCommand(PrimeShizukuStarter.internalCommand(context))
-                        if (output?.contains("info: peerlink_starter exit with 0") == true || engineAlive()) {
-                            Result.Success(port)
-                        } else {
-                            Result.Failure("Prime launcher timed out; retry activation")
-                        }
-                    } finally {
-                        client.disconnect()
-                    }
-                } finally {
-                    adbMdns.stop()
-                    ports.close()
+                val port = if (cachedPort in 1..65535) {
+                    cachedPort
+                } else {
+                    discoverTlsPort(discoverTimeoutMs)
                 }
+                if (port !in 1..65535) {
+                    return@withTimeoutOrNull Result.Failure(
+                        "No local ADB endpoint found. Keep Wireless debugging enabled."
+                    )
+                }
+                report("Starting with wireless adb in port $port")
+                startOnPort(port)
             } ?: if (engineAlive()) Result.Success(cachedPort) else Result.Failure("Prime timed out: $stage. Check Wireless debugging and retry.")
         } catch (cancelled: CancellationException) {
             throw cancelled
-        } catch (_: Exception) {
+        } catch (error: Exception) {
+            AppState.appendLog("[PRIME-ADB] ${error.javaClass.simpleName}: ${error.message}")
             if (engineAlive()) Result.Success(cachedPort)
-            else Result.Failure("Prime failed while ${stage.lowercase()}; retry activation")
+            else Result.Failure(describeAdbError(error, stage), error)
         }
+    }
+
+    private suspend fun discoverTlsPort(timeoutMs: Long): Int {
+        val ports = Channel<Int>(Channel.CONFLATED)
+        val adbMdns = PrimeShizukuAdbMdns(context, PrimeShizukuAdbMdns.TLS_CONNECT) { port ->
+            if (port in 1..65535) ports.trySend(port)
+        }
+        adbMdns.start()
+        return try {
+            withTimeoutOrNull(timeoutMs) { ports.receive() } ?: 0
+        } finally {
+            adbMdns.stop()
+            ports.close()
+        }
+    }
+
+    private suspend fun startOnPort(port: Int): Result {
+        PeerLinkAdbManager.resetInstance(context)
+        val client = AdbConnectClient(context)
+        return try {
+            try {
+                client.connect("127.0.0.1", port)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: ConnectException) {
+                return Result.Failure("Cannot connect to Wireless debugging port $port: ${error.message}", error)
+            } catch (error: SSLProtocolException) {
+                return Result.Failure("Prime pairing is required before activation (${error.message})", error)
+            } catch (error: AdbPairingRequiredException) {
+                return Result.Failure("Prime pairing is required before activation (${error.message})", error)
+            }
+            AppState.appendLog("[PRIME-ADB] connect 127.0.0.1:$port")
+            val outcome = client.runStarter(PrimeShizukuStarter.internalCommand(context))
+            val output = outcome.output
+            if (output.isNotBlank()) {
+                AppState.appendLog("[PRIME-ADB] starter output:\n${output.takeLast(1_500)}")
+            }
+            val fatal = output.lineSequence().firstOrNull { it.contains("fatal:") }
+            when {
+                output.contains("info: peerlink_starter exit with 0") || engineAlive() -> Result.Success(port)
+                fatal != null -> Result.Failure("Prime starter failed: $fatal")
+                outcome.complete && outcome.exitCode != null && outcome.exitCode != 0 ->
+                    Result.Failure("Prime starter exited ${outcome.exitCode}")
+                else -> Result.Failure(
+                    if (output.isBlank()) "Prime launcher produced no starter output"
+                    else "Prime starter did not exit cleanly"
+                )
+            }
+        } finally {
+            client.disconnect()
+        }
+    }
+
+    private fun describeAdbError(error: Throwable, stage: String): String = when (error) {
+        is ConnectException -> "Cannot connect to Wireless debugging: ${error.message}"
+        is SSLProtocolException, is AdbPairingRequiredException ->
+            "Prime pairing is required before activation (${error.message})"
+        else -> "ADB start failed: ${error.javaClass.simpleName}: ${error.message} ($stage)"
     }
 
     private suspend fun engineAlive(): Boolean {
@@ -120,16 +141,4 @@ class PrimeShizukuBootstrapEngine(private val context: Context) {
         }
         return false
     }
-
-    private fun adbTcpPort(): Int {
-        val service = systemProperty("service.adb.tcp.port")
-        if (service > 0) return service
-        return systemProperty("persist.adb.tcp.port")
-    }
-
-    private fun systemProperty(name: String): Int = runCatching {
-        val systemProperties = Class.forName("android.os.SystemProperties")
-        val get = systemProperties.getMethod("get", String::class.java, String::class.java)
-        (get.invoke(null, name, "-1") as String).toInt()
-    }.getOrDefault(-1)
 }

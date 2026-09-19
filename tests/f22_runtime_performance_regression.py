@@ -18,8 +18,8 @@ checks = {
     'memory exports game foreground': 'val gameForeground: Boolean = false' in memory,
     'memory uid polling throttled': 'UID_SAMPLE_MS = 1_500L' in memory and 'MEMORY_SAMPLE_MS = 4_000L' in memory,
     'guardian lifecycle is exported': 'Foreground guardian service created' in service and 'Foreground guardian service destroyed' in service,
-    'native daemon ignores SIGHUP': 'signal(SIGHUP, SIG_IGN)' in starter and 'PR_SET_PDEATHSIG' in starter,
-    'native daemon keeps diagnostics': '/data/local/tmp/peerlink_prime.log' in starter,
+    'native daemon detaches like Shizuku': 'setsid()' in starter and 'PR_SET_PDEATHSIG' not in starter,
+    'native daemon keeps starter identity': 'peerlink_prime' in starter and 'PrimeServerMain' in starter,
 }
 failed = [name for name, ok in checks.items() if not ok]
 for name, ok in checks.items():
