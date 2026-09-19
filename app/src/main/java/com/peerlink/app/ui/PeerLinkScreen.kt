@@ -1120,6 +1120,11 @@ fun PrimeSetupScreen(
     var pairingResult by remember { mutableStateOf("") }
     var pairingResultOk by remember { mutableStateOf<Boolean?>(null) }
     var showForgetConfirm by remember { mutableStateOf(false) }
+    var shellInput by remember { mutableStateOf(TextFieldValue("pm disable-user --user 0 com.transsion.phonemaster")) }
+    var shellOutput by remember { mutableStateOf("") }
+    var shellOk by remember { mutableStateOf<Boolean?>(null) }
+    var shellBusy by remember { mutableStateOf(false) }
+    val shellScope = rememberCoroutineScope()
     val mainHandler = remember { android.os.Handler(android.os.Looper.getMainLooper()) }
 
     val (heroLabel, heroColor) = when {
@@ -1333,6 +1338,70 @@ fun PrimeSetupScreen(
 
             if (isPaired) {
                 PrimeEngineStrip(primeLinkState, snap.primeServerAlive)
+
+                PrimeControlCard(
+                    title = "Prime Shell",
+                    subtitle = "Run one privileged command. Prime engine must be alive.",
+                    icon = Icons.Rounded.Terminal,
+                ) {
+                    BasicTextField(
+                        value = shellInput,
+                        onValueChange = { shellInput = it },
+                        textStyle = androidx.compose.ui.text.TextStyle(
+                            color = PL.ink,
+                            fontSize = 12.sp,
+                            fontFamily = FontFamily.Monospace,
+                        ),
+                        cursorBrush = SolidColor(PL.gold),
+                        modifier = Modifier.fillMaxWidth(),
+                        decorationBox = { inner ->
+                            Box(
+                                Modifier.fillMaxWidth()
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(PL.elevated)
+                                    .border(1.dp, PL.line, RoundedCornerShape(10.dp))
+                                    .padding(12.dp),
+                            ) {
+                                if (shellInput.text.isEmpty()) {
+                                    Text("pm disable-user --user 0 <package>", color = PL.muted, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
+                                }
+                                inner()
+                            }
+                        },
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    GhostBtn(
+                        if (shellBusy) "Running…" else "Run command",
+                        Icons.Rounded.PlayArrow,
+                        enabled = !shellBusy && snap.primeServerAlive && shellInput.text.isNotBlank(),
+                    ) {
+                        val cmd = shellInput.text
+                        shellBusy = true
+                        shellScope.launch {
+                            val result = withContext(Dispatchers.IO) { GodModeManager.runUserShell(cmd) }
+                            shellOutput = buildString {
+                                if (result.output.isNotBlank()) append(result.output.trim()).append('\n')
+                                append("exit ").append(result.exitCode)
+                            }
+                            shellOk = result.ok
+                            shellBusy = false
+                        }
+                    }
+                    if (!snap.primeServerAlive) {
+                        Spacer(Modifier.height(8.dp))
+                        Text("Activate Prime first so the engine can run pm.", fontSize = 11.sp, color = PL.muted)
+                    }
+                    if (shellOutput.isNotBlank()) {
+                        Spacer(Modifier.height(10.dp))
+                        Text(
+                            shellOutput,
+                            fontSize = 11.sp,
+                            fontFamily = FontFamily.Monospace,
+                            color = if (shellOk == true) PL.green else PL.red,
+                            lineHeight = 15.sp,
+                        )
+                    }
+                }
 
                 Text(
                     "PRIME CONTROL CENTER · ANDROID ${capabilities.sdk}",

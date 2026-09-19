@@ -1083,6 +1083,16 @@ object GodModeManager {
         return false
     }
 
+    fun runUserShell(command: String, timeoutMs: Int = 30_000): PrimeExecResult {
+        val trimmed = command.trim()
+        if (trimmed.isEmpty()) return PrimeExecResult("", -1, false)
+        if (!PrimeClient.isAlive(timeoutMs = 800)) {
+            return PrimeExecResult("Prime engine is not running. Activate Prime first.", -1, false)
+        }
+        AppState.appendLog("[PRIME-SHELL] $trimmed")
+        return executePrimeShellChecked(trimmed, timeoutMs)
+    }
+
     private fun executePrimeShellChecked(command: String, timeoutMs: Int = PrimeClient.CMD_TIMEOUT_MS): PrimeExecResult {
         val wrapped = "( $command ); __pl_rc=\$?; printf '\\n${primeExitMarker}%s\\n' \"${'$'}__pl_rc\""
         val raw = PrimeClient.execute(wrapped, timeoutMs)
