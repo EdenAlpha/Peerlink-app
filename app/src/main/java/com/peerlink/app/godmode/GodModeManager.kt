@@ -1040,12 +1040,16 @@ object GodModeManager {
         }
         when (result) {
             is PrimeShizukuBootstrapEngine.Result.Failure -> {
-                AppState.appendLog("[PRIME-MODE ] Bootstrap FAILED: ${result.reason}${result.throwable?.let { " — ${it.message}" } ?: ""}")
-                saveBootstrapStatus("PENDING: ${result.reason}")
-                updateSetupSnapshot(primeServerAlive = false)
-                setState(State.ERROR, result.reason)
-                startWatching()
-                return false
+                if (PrimeClient.isAlive(timeoutMs = 2_000) || isPrimeLoopbackBound()) {
+                    AppState.appendLog("[PRIME-MODE ] Bootstrap reported failure but PrimeServer is alive — continuing")
+                } else {
+                    AppState.appendLog("[PRIME-MODE ] Bootstrap FAILED: ${result.reason}${result.throwable?.let { " — ${it.message}" } ?: ""}")
+                    saveBootstrapStatus("PENDING: ${result.reason}")
+                    updateSetupSnapshot(primeServerAlive = false)
+                    setState(State.ERROR, result.reason)
+                    startWatching()
+                    return false
+                }
             }
             is PrimeShizukuBootstrapEngine.Result.Success -> {
                 connectPort = result.port

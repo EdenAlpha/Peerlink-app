@@ -7,9 +7,11 @@ import android.os.Build
 import android.provider.Settings
 import com.peerlink.app.godmode.AdbConnectClient
 import com.peerlink.app.godmode.PeerLinkAdbManager
+import com.peerlink.app.godmode.PrimeClient
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.net.ConnectException
@@ -90,15 +92,11 @@ class PrimeShizukuBootstrapEngine(private val context: Context) {
                             )
                         }
                         val output = client.shellCommand(PrimeShizukuStarter.internalCommand(context))
-                            ?: return@withTimeoutOrNull Result.Failure(
-                                "Prime launcher timed out; retry activation"
-                            )
-                        if (!output.contains("info: peerlink_starter exit with 0")) {
-                            return@withTimeoutOrNull Result.Failure(
-                                "Prime launcher timed out; retry activation"
-                            )
+                        if (output?.contains("info: peerlink_starter exit with 0") == true || engineAlive()) {
+                            Result.Success(port)
+                        } else {
+                            Result.Failure("Prime launcher timed out; retry activation")
                         }
-                        Result.Success(port)
                     } finally {
                         client.disconnect()
                     }
@@ -106,12 +104,22 @@ class PrimeShizukuBootstrapEngine(private val context: Context) {
                     adbMdns.stop()
                     ports.close()
                 }
-            } ?: Result.Failure("Prime timed out: $stage. Check Wireless debugging and retry.")
+            } ?: if (engineAlive()) Result.Success(cachedPort) else Result.Failure("Prime timed out: $stage. Check Wireless debugging and retry.")
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (_: Exception) {
-            Result.Failure("Prime failed while ${stage.lowercase()}; retry activation")
+            if (engineAlive()) Result.Success(cachedPort)
+            else Result.Failure("Prime failed while ${stage.lowercase()}; retry activation")
         }
+    }
+
+    private suspend fun engineAlive(): Boolean {
+        if (PrimeClient.isAlive(timeoutMs = 800)) return true
+        repeat(8) {
+            delay(250L)
+            if (PrimeClient.isAlive(timeoutMs = 800)) return true
+        }
+        return false
     }
 
     private fun adbTcpPort(): Int {

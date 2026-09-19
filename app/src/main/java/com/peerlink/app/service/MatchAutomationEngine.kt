@@ -140,6 +140,7 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
     private var captureMode: CaptureMode? = null
     private var modeStartedAtMs = 0L
     private var pathBTriggerSinceMs = 0L
+    private var pathBCooldownUntilMs = 0L
 
     private var lowFlowSinceMs = 0L
     private var disconnectResolved = false
@@ -267,10 +268,7 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
                         enterModeLocked(CaptureMode.PATH_A_WATCH, now)
                         startProducer = true
                         logCapture = "[MATCH-CAP ] 54B tail detected -> Path A capture (4fps), expecting ~0pps within ${ZERO_PPS_CONFIRM_MS / 1000}s"
-                    } else if (!smallPacketSeenThisMatch && signal in 1 until PATH_B_TRIGGER_PPS) {
-                        // Deep collapse without any 54B this match opens Path B.
-                        // Two consecutive deep polls (>=1s apart) latch it so a
-                        // one-off stall just under the threshold cannot fire.
+                    } else if (!smallPacketSeenThisMatch && signal in 1 until PATH_B_TRIGGER_PPS && now >= pathBCooldownUntilMs) {
                         if (pathBTriggerSinceMs == 0L) {
                             pathBTriggerSinceMs = now
                         } else if (now - pathBTriggerSinceMs >= 1_000L) {
@@ -333,6 +331,8 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
                         logCapture = "[MATCH-CAP ] Gameplay recovered (pps=$signal) -> Path B capture ended"
                     } else if (now - modeStartedAtMs >= PATH_B_MAX_MS) {
                         endModeLocked()
+                        pathBTriggerSinceMs = 0L
+                        pathBCooldownUntilMs = now + 20_000L
                         logCapture = "[MATCH-CAP ] Path B window closed without a verified score"
                     }
                 }
@@ -459,7 +459,6 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
         AppState.appendLog("[MATCH-AUTO] Peer forfeit received reason=$reason -> local 3-0")
     }
 
-    /** Manual FT is one explicit screenshot; repeated taps do not overlap. */
     fun manualFullTimeCapture() {
         val context = appContext ?: return
         val generation = synchronized(lock) {
@@ -470,12 +469,13 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
         AppState.appendLog("[MATCH-FT  ] Manual FT tap")
         scope.launch {
             try {
+                val candidate = confirmedCandidate()
                 when (PrimeClient.isPackageForeground(EFOOTBALL_PACKAGE)) {
                     false -> {
-                        // An explicit FT claim while eFootball is not the foreground
-                        // app is the strong fake-result signal described by the match
-                        // rules. Record the local 0-3 immediately; the normal ledger
-                        // reward/penalty path supplies the point deduction.
+                        if (candidate != null && commitDetectedScore(candidate, "manual-candidate", generation)) {
+                            AppState.appendLog("[MATCH-FT  ] Confirmed toasted candidate ${candidate.home}-${candidate.away} after leaving eFootball")
+                            return@launch
+                        }
                         var forfeited = false
                         synchronized(lock) {
                             if (started && sessionGeneration == generation && !scoreConfirmed) {
@@ -506,24 +506,30 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
                         return@launch
                     }
                     null -> {
+                        if (candidate != null && commitDetectedScore(candidate, "manual-candidate", generation)) return@launch
                         main.post { Toast.makeText(context, "Could not verify eFootball is foreground — try FT again", Toast.LENGTH_SHORT).show() }
                         return@launch
                     }
                     true -> Unit
                 }
 
-                // Manual FT is intentionally one capture only. The player is
-                // explicitly asserting that the final score is visible now.
-                val score = PrimeScreenScoreDetector.captureScore(context)
+                val captured = PrimeScreenScoreDetector.captureScore(context)
+                val score = captured ?: candidate
                 if (score == null) {
                     main.post { Toast.makeText(context, "Final score not visible — keep the result visible and retry", Toast.LENGTH_SHORT).show() }
                     return@launch
                 }
-                commitDetectedScore(score, "manual", generation)
+                val mode = if (captured != null) "manual" else "manual-candidate"
+                commitDetectedScore(score, mode, generation)
             } finally {
                 manualCaptureBusy.set(false)
             }
         }
+    }
+
+    private fun confirmedCandidate(): PrimeScreenScoreDetector.Score? = synchronized(lock) {
+        val score = lastAutoCandidate
+        if (score != null && autoCandidateHits >= 2) score else null
     }
 
     /**
@@ -740,6 +746,7 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
         lastAutoCandidate = null
         autoCandidateHits = 0
         pathBTriggerSinceMs = 0L
+        pathBCooldownUntilMs = 0L
         lowFlowSinceMs = 0L
         disconnectResolved = false
         scoreConfirmed = false

@@ -120,7 +120,7 @@ has('app/src/main/java/com/peerlink/app/service/ScoreLaneReader.kt', 'it in 0..2
 has('app/src/main/java/com/peerlink/app/service/ScoreLaneReader.kt', 'compact', 'compact two-digit OCR tokens can be split across Home/Away')
 has(detector, 'ScoreVisualPreprocessor.prepare', 'pixel-isolated score preprocessing is integrated')
 has(engine, 'if (score.finalScreen)', 'automatic submission requires final-screen evidence')
-has(engine, 'Manual FT is intentionally one capture only', 'manual FT is a single capture')
+has(engine, 'confirmedCandidate', 'manual FT can commit the toasted auto-read score')
 has(engine, 'invalid_manual_ft', 'fake manual FT can be forfeited')
 has(server, 'captureDisplayFast', 'Prime uses direct SurfaceControl capture for the high-rate path')
 has(detector, 'ScoreVisualPreprocessor', 'score reader uses fixed-layout visual preprocessing')
