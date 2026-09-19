@@ -108,7 +108,10 @@ object PrimeScreenScoreDetector {
         } catch (_: Exception) {
             null
         } ?: return null
-        if (detection.type == ScoreBoardDetector.ScreenType.OTHER) return null
+        if (detection.type == ScoreBoardDetector.ScreenType.OTHER) {
+            AppState.appendLog("[MATCH-OCR ] F33 OTHER ${detection.gateInfo} ${frame.bitmap.width}x${frame.bitmap.height}")
+            return if (allowMlKit) detectViaMlKit(frame) else null
+        }
         val score = detection.score
         if (score != null) {
             val stats = detection.stats

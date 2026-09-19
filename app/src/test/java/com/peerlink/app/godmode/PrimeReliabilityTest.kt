@@ -69,6 +69,10 @@ class PrimeReliabilityTest {
         assertNull(PrimeForegroundParser.isForeground("Permission denied", "jp.konami.pesam"))
         assertEquals(true, PrimeForegroundParser.isForeground("mTopResumedActivity=ActivityRecord{123 u0 jp.konami.pesam/.GameActivity t1}", "jp.konami.pesam"))
         assertEquals(false, PrimeForegroundParser.isForeground("mResumedActivity=ActivityRecord{123 u0 jp.konami.pesam.fake/.Main t1}", "jp.konami.pesam"))
+        assertEquals(
+            listOf("com.peerlink.app"),
+            PrimeForegroundParser.resumedPackages("mResumedActivity=ActivityRecord{123 u0 com.peerlink.app/.ui.MainActivity t1}"),
+        )
     }
     @Test fun nonFinalScreensCannotFinalizeScore() {
         for (text in listOf("Online Match 0-0", "eFootball Stadium 2-1", "Half Time 1-0", "90:00 2-1")) {

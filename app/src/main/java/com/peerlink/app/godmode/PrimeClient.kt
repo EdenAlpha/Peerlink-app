@@ -197,13 +197,18 @@ object PrimeClient {
 
     /** Fast manual-FT fraud gate; only called on the user's explicit FT tap. */
     fun isPackageForeground(packageName: String, timeoutMs: Int = 1_500): Boolean? {
+        val pkgs = resumedPackages(timeoutMs) ?: return null
         val safe = packageName.replace(Regex("[^A-Za-z0-9._]"), "")
         if (safe.isBlank()) return false
+        return safe in pkgs
+    }
+
+    fun resumedPackages(timeoutMs: Int = 1_500): List<String>? {
         val out = executeQuiet(
             "dumpsys activity activities | grep -E 'mResumedActivity|[tT]opResumedActivity'",
             timeoutMs,
         ) ?: return null
-        return PrimeForegroundParser.isForeground(out, safe)
+        return PrimeForegroundParser.resumedPackages(out)
     }
 
     private fun readUtf8LineLimited(input: java.io.InputStream, maxBytes: Int): String? {

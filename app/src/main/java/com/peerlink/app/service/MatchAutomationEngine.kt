@@ -79,6 +79,7 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
     private const val PAUSE_WINDOW_MS = 1_500L
     /** Path A tail budget after a confirmed cliff. */
     private const val PATH_A_TAIL_MS = 7_000L
+    private const val STATS_HUNT_MAX_MS = 45_000L
 
     /** A poll at or below this reads as the cliff (game feed dead). */
     private const val ZERO_PPS_THRESHOLD = 1
@@ -248,6 +249,9 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
                         if (signal >= GAMEPLAY_PPS_MIN) {
                             endModeLocked()
                             logCapture = "[MATCH-CAP ] Gameplay returned during stats hunt -> capture ended"
+                        } else if (now - modeStartedAtMs >= STATS_HUNT_MAX_MS) {
+                            endModeLocked()
+                            logCapture = "[MATCH-CAP ] Stats hunt window closed"
                         } else if (captureJob == null) {
                             startProducer = true
                         }
@@ -391,6 +395,9 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
                     if (signal >= GAMEPLAY_PPS_MIN) {
                         endModeLocked()
                         logCapture = "[MATCH-CAP ] Gameplay returned during stats hunt -> capture ended"
+                    } else if (now - modeStartedAtMs >= STATS_HUNT_MAX_MS) {
+                        endModeLocked()
+                        logCapture = "[MATCH-CAP ] Stats hunt window closed"
                     }
                 }
             }
@@ -557,7 +564,7 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
                     try {
                         analyzed++
                         val startedAt = SystemClock.elapsedRealtime()
-                        val score = PrimeScreenScoreDetector.detectFrame(frame, allowMlKit = false)
+                        val score = PrimeScreenScoreDetector.detectFrame(frame, allowMlKit = true)
                         val analyzeMs = SystemClock.elapsedRealtime() - startedAt
                         if (analyzeMs >= 200L) {
                             AppState.appendLog("[MATCH-OCR ] analyze ${analyzeMs}ms ${frame.bitmap.width}x${frame.bitmap.height}")
@@ -596,21 +603,23 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
                         val nowFg = SystemClock.elapsedRealtime()
                         if (nowFg - lastForegroundCheckMs >= 2_000L) {
                             lastForegroundCheckMs = nowFg
-                            when (PrimeClient.isPackageForeground(EFOOTBALL_PACKAGE)) {
-                                false -> {
+                            val resumed = PrimeClient.resumedPackages()
+                            val efootballFront = resumed?.contains(EFOOTBALL_PACKAGE)
+                            val peerlinkFront = resumed?.any { it.startsWith("com.peerlink.app") }
+                            when {
+                                efootballFront == true || peerlinkFront == true -> efootballGoneHits = 0
+                                efootballFront == false && peerlinkFront == false -> {
                                     efootballGoneHits++
-                                    if (efootballGoneHits >= 2) {
+                                    if (efootballGoneHits >= 3) {
                                         synchronized(lock) { endModeLocked() }
                                         AppState.appendLog("[MATCH-CAP ] eFootball left foreground — stats hunt ended")
                                         break
                                     }
                                 }
-                                true -> efootballGoneHits = 0
-                                null -> Unit
                             }
                         }
                     }
-                    if (modeNow != CaptureMode.PATH_A_PAUSE) {
+                    if (modeNow != null) {
                         val frame = PrimeScreenScoreDetector.captureFrame(context)
                         if (frame != null) {
                             capturedOk++
