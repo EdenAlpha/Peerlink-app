@@ -114,10 +114,9 @@ class PrimeShizukuBootstrapEngine(private val context: Context) {
     }
 
     private suspend fun engineAlive(): Boolean {
-        if (PrimeClient.isAlive(timeoutMs = 800)) return true
-        repeat(8) {
-            delay(250L)
+        repeat(16) {
             if (PrimeClient.isAlive(timeoutMs = 800)) return true
+            delay(250L)
         }
         return false
     }

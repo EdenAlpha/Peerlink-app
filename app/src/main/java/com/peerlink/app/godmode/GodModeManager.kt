@@ -494,7 +494,7 @@ object GodModeManager {
         if (!guardianPulseRunning.compareAndSet(false, true)) return
         scope.launch {
             try {
-                if (PrimeClient.isAlive(timeoutMs = 2_000)) {
+                if (PrimeClient.isAlive(timeoutMs = 2_000) || isPrimeLoopbackBound()) {
                     AppState.primeServerAlive = true
                     _primeLinkState.value = PrimeLinkState.CONNECTED
                     updateSetupSnapshot(primeServerAlive = true)
@@ -511,8 +511,8 @@ object GodModeManager {
                 AppState.appendLog("[PRIME-GUARD] PrimeServer heartbeat lost — automatic recovery starting")
 
                 commandGate.withPermit {
-                    if (isPrimeLoopbackBound()) {
-                        AppState.appendLog("[PRIME-GUARD] Loopback still bound — not relaunching")
+                    if (PrimeClient.isAlive(timeoutMs = 2_000) || isPrimeLoopbackBound()) {
+                        AppState.appendLog("[PRIME-GUARD] Engine still reachable — not relaunching")
                         AppState.primeServerAlive = true
                         _primeLinkState.value = PrimeLinkState.CONNECTED
                         updateSetupSnapshot(primeServerAlive = true)
@@ -1030,6 +1030,13 @@ object GodModeManager {
         setState(if (needBootstrap) State.BOOTSTRAPPING else State.CONNECTING,
             if (needBootstrap) "Completing one-time Prime setup…" else "Restoring Prime Mode connection…")
         AppState.appendLog("[PRIME-MODE ] ensurePrimeServerAlive: starting (needBootstrap=$needBootstrap)")
+        if (PrimeClient.isAlive(timeoutMs = 2_000) || isPrimeLoopbackBound()) {
+            AppState.appendLog("[PRIME-MODE ] PrimeServer already alive — skip ADB start")
+            AppState.primeServerAlive = true
+            if (needBootstrap) markBootstrapped()
+            startWatching()
+            return true
+        }
         connectMdns?.stop()
         connectMdns = null
 

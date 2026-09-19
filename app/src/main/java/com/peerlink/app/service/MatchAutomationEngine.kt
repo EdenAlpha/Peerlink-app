@@ -310,9 +310,9 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
                         endModeLocked()
                         logCapture = "[MATCH-CAP ] Gameplay recovered after cliff watch -> capture ended"
                     } else if (now - modeStartedAtMs >= PATH_A_TAIL_MS) {
-                        if (scoreConfirmed && !statsComplete) {
+                        if (!statsComplete) {
                             enterModeLocked(CaptureMode.STATS_HUNT, now)
-                            logCapture = "[MATCH-CAP ] Score locked — hunting stats board"
+                            logCapture = "[MATCH-CAP ] Path A ended — keep capturing until stats or eFootball leaves"
                         } else {
                             endModeLocked()
                             logCapture = "[MATCH-CAP ] Path A tail window closed without a verified score"
@@ -325,9 +325,9 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
                         enterModeLocked(CaptureMode.PATH_A_TAIL, now)
                         logCapture = "[MATCH-CAP ] Delayed cliff reached 0pps -> capture resumed, tail <= ${PATH_A_TAIL_MS / 1000}s"
                     } else if (now - modeStartedAtMs >= PAUSE_WINDOW_MS) {
-                        if (scoreConfirmed && !statsComplete) {
+                        if (!statsComplete) {
                             enterModeLocked(CaptureMode.STATS_HUNT, now)
-                            logCapture = "[MATCH-CAP ] Score locked — hunting stats board"
+                            logCapture = "[MATCH-CAP ] Keep capturing until stats or eFootball leaves"
                         } else {
                             endModeLocked()
                             logCapture = "[MATCH-CAP ] No 0pps within pause window -> 54B was noise; capture ended"
@@ -341,9 +341,9 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
                         endModeLocked()
                         logCapture = "[MATCH-CAP ] Gameplay recovered (pps=$signal) -> Path B capture ended"
                     } else if (now - modeStartedAtMs >= PATH_B_MAX_MS) {
-                        if (scoreConfirmed && !statsComplete) {
+                        if (!statsComplete) {
                             enterModeLocked(CaptureMode.STATS_HUNT, now)
-                            logCapture = "[MATCH-CAP ] Score locked — hunting stats board"
+                            logCapture = "[MATCH-CAP ] Path B ended — keep capturing until stats or eFootball leaves"
                         } else {
                             endModeLocked()
                             pathBTriggerSinceMs = 0L
@@ -601,7 +601,21 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
 
     private fun registerAutomaticCandidate(score: PrimeScreenScoreDetector.Score, generation: Long, burst: Long): Boolean = synchronized(lock) {
         if (!started || sessionGeneration != generation || captureGeneration != burst || !rolesLocked) return@synchronized false
+        if (score.source.contains("menu")) {
+            AppState.appendLog("[MATCH-OCR ] Ignoring MENU ${score.home}-${score.away} for auto-lock")
+            return@synchronized false
+        }
+        val board = score.source.contains("board") || (score.stats?.rows?.size ?: 0) >= 4
         val previous = lastAutoCandidate
+        if (previous != null && previous.source.contains("board") &&
+            (previous.home != score.home || previous.away != score.away) && !board) {
+            return@synchronized false
+        }
+        if (board) {
+            lastAutoCandidate = score
+            autoCandidateHits = 2
+            return@synchronized true
+        }
         if (previous != null && previous.home == score.home && previous.away == score.away) {
             autoCandidateHits++
             lastAutoCandidate = score
@@ -609,8 +623,6 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
             lastAutoCandidate = score
             autoCandidateHits = 1
         }
-        // Two matching frames only cost ~250 ms but substantially reduce an OCR
-        // misread on a transition frame.
         autoCandidateHits >= 2
     }
 
