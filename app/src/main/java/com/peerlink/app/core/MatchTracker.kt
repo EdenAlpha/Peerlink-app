@@ -156,12 +156,28 @@ object MatchTracker {
             totalGoals = myGoals + opponentGoals,
             lastActivityMs = now,
             lastCompleted = record,
-            statusNote = "Full time - screen verified",
+            stats = stats,
+            statusNote = if (stats == null) "Score locked — waiting for stats" else "Full time - screen verified",
         )
         AppState.appendLog(
             "[MATCH] SCREEN FINAL $myGoals-$opponentGoals source=$source; " +
                 "PeerCoin ${if (reward.totalCents >= 0) "+" else ""}${formatCents(reward.totalCents)}"
         )
+        true
+    }
+
+    fun attachStats(stats: MatchStats): Boolean = synchronized(lock) {
+        if (!sessionActive) return@synchronized false
+        val current = _state.value.lastCompleted ?: return@synchronized false
+        val context = appContext ?: return@synchronized false
+        if (!MatchStore.updateStats(context, current.id, stats)) return@synchronized false
+        val updated = current.copy(stats = stats)
+        _state.value = _state.value.copy(
+            lastCompleted = updated,
+            stats = stats,
+            statusNote = "Full time - score and stats verified",
+        )
+        AppState.appendLog("[MATCH] Attached ${stats.rows.size} stat rows to ${current.id}")
         true
     }
 
@@ -226,4 +242,5 @@ data class LiveMatchState(
     val lastActivityMs: Long = 0,
     val statusNote: String = "",
     val lastCompleted: MatchRecord? = null,
+    val stats: MatchStats? = null,
 )

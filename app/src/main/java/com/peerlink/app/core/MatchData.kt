@@ -388,6 +388,18 @@ object MatchStore {
     }
 
     @Synchronized
+    fun updateStats(context: Context, id: String, stats: MatchStats): Boolean {
+        if (id.isBlank()) return false
+        val current = ArrayList(load(context))
+        val index = current.indexOfFirst { it.id == id }
+        if (index < 0) return false
+        current[index] = current[index].copy(stats = stats)
+        persistAtomically(context, current)
+        cache = current
+        return true
+    }
+
+    @Synchronized
     fun stats(context: Context) = PeerCoinStats(load(context).sortedBy { it.endedAtMs })
 
     @Synchronized

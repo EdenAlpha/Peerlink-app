@@ -804,7 +804,28 @@ private data class Tool(val key: String, val label: String, val icon: ImageVecto
             Spacer(Modifier.height(6.dp))
             Text(state.statusNote, fontSize = 10.sp, color = PL.muted)
         }
+        val rows = state.stats?.rows ?: state.lastCompleted?.stats?.rows
+        if (!rows.isNullOrEmpty()) {
+            Spacer(Modifier.height(10.dp))
+            rows.forEach { row ->
+                Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text(statLabel(row.name), fontSize = 11.sp, color = PL.inkSoft, modifier = Modifier.weight(1f))
+                    Text("${row.home}", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = PL.ink)
+                    Text(" – ", fontSize = 12.sp, color = PL.muted)
+                    Text("${row.away}", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = PL.ink)
+                }
+            }
+        }
     }
+}
+
+private fun statLabel(name: String): String = when (name) {
+    "TotalShots" -> "Total shots"
+    "ShotsOnTarget" -> "Shots on target"
+    "CornerKicks" -> "Corners"
+    "FreeKicks" -> "Free kicks"
+    "SuccessfulPasses" -> "Successful passes"
+    else -> name
 }
 
 @Composable private fun LiveScoreStrip(state: LiveMatchState) {
@@ -895,7 +916,7 @@ private data class Tool(val key: String, val label: String, val icon: ImageVecto
     Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
             Text("Match markers", color = PL.ink, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-            Text("Mark a goal or full time while playing", color = PL.muted, fontSize = 12.sp)
+            Text("Home / Away marker while playing", color = PL.muted, fontSize = 12.sp)
         }
         Switch(checked = markerEnabled, onCheckedChange = {
             markerEnabled = it; onMatchMarker(it)

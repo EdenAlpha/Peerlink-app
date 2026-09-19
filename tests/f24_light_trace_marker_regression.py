@@ -41,7 +41,7 @@ lacks(ui, 'peerlink_wire_$stamp.pcapng', 'PCAPNG export removed')
 has(manifest, 'android.permission.SYSTEM_ALERT_WINDOW', 'overlay permission declared')
 lacks(overlay, 'markerButton("G", "GOAL")', 'obsolete goal marker removed')
 has(overlay, 'Mode.SIDE_CHOICES', 'overlay now supports H/A selection')
-has(overlay, 'Mode.FULL_TIME', 'overlay retains manual FT fallback')
+lacks(overlay, 'Mode.FULL_TIME', 'manual FT overlay mode is gone')
 lacks(overlay, 'while (', 'overlay has no polling loop')
 
 print(f'F24 regression PASS {len(checks)}/{len(checks)}')
