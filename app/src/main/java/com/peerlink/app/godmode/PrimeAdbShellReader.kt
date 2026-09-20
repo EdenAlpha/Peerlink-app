@@ -4,7 +4,7 @@ import java.io.Reader
 import java.io.IOException
 
 /** Stop at our exit marker: detached descendants may keep the ADB pipe open. */
-internal object PrimeAdbShellReader {
+object PrimeAdbShellReader {
     data class Outcome(
         val output: String,
         val exitCode: Int?,
