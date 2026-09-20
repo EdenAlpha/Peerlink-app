@@ -85,6 +85,7 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
     private const val ZERO_PPS_THRESHOLD = 1
 
     private const val AUTO_CAPTURE_DELAY_MS = 0L
+    private const val GAMEPLAY_ARM_SAMPLES = 15
     private const val CAPTURE_INTERVAL_MS = 250L        // 4 fps
     private const val DISCONNECT_CONFIRM_MS = 135_000L
     private const val REMATCH_MIN_GAP_MS = 20_000L
@@ -118,6 +119,8 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
 
     private var ppsDirection: PpsDirection? = null
     private var gameplayT0Ms = 0L
+    private var gameplayBandHits = 0
+    private var captureArmed = false
     private var currentPps = 0
 
     private var lastSmallGamePackets = 0L
@@ -160,7 +163,7 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
         MatchMarkerOverlay.setWaiting()
         MatchMarkerOverlay.show(context)
         ScoreCaptureDump.init(context)
-        AppState.appendLog("[MATCH-AUTO] Started: T0=first 24-27pps; capture on 54B-tail or <${PATH_B_TRIGGER_PPS}pps (no 5:00 gate)")
+        AppState.appendLog("[MATCH-AUTO] Started: T0=first 24-27pps; capture arms after ${GAMEPLAY_ARM_SAMPLES}s of kickoff flow")
     }
 
     fun stop() {
@@ -243,11 +246,15 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
 
             val signal = ppsFor(ppsDirection ?: PpsDirection.OUTBOUND, outPps, inPps)
             currentPps = signal
-            val age = now - gameplayT0Ms
+            if (signal in GAMEPLAY_PPS_MIN..GAMEPLAY_PPS_MAX) {
+                gameplayBandHits++
+                if (!captureArmed && gameplayBandHits >= GAMEPLAY_ARM_SAMPLES) {
+                    captureArmed = true
+                    logT0 = "[MATCH-AUTO] Capture armed after ${gameplayBandHits}s of 24-27pps kickoff flow"
+                }
+            }
 
-            // Pre-5:00 traffic only maintains the disconnect watch. Capture
-            // triggers cannot exist before the earliest realistic full time.
-            if (age < AUTO_CAPTURE_DELAY_MS) {
+            if (!captureArmed) {
                 if (signal < GAMEPLAY_PPS_MIN) {
                     if (lowFlowSinceMs == 0L) lowFlowSinceMs = now
                     if (!disconnectResolved && now - lowFlowSinceMs >= DISCONNECT_CONFIRM_MS) {
@@ -751,6 +758,8 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
         sideSelectionStarted = false
         ppsDirection = null
         gameplayT0Ms = 0L
+        gameplayBandHits = 0
+        captureArmed = false
         currentPps = 0
         lastSmallGamePackets = 0L
         smallPacketSeenThisMatch = false
@@ -778,6 +787,8 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
             scoreConfirmed = false
             scoreConfirmedAtMs = 0L
             gameplayT0Ms = now
+            gameplayBandHits = 0
+            captureArmed = false
             lastAutoCandidate = null
             autoCandidateHits = 0
             lastSmallGamePackets = lastStats?.smallGamePackets ?: lastSmallGamePackets
