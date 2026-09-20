@@ -391,7 +391,7 @@ class MainActivity : AppCompatActivity(), NsdDiscovery.NsdCallback {
                                 }
                                 AppState.appendLog(
                                     "[EXPORT ] Match log chars=${fullLog.length} ok=$logOk; " +
-                                        "UDP timing trace chars=${udpTrace.length} ok=$traceOk; " +
+                                        "UDP timing trace chars=${udpTrace.length} ok=$traceOk rawBytes=off; " +
                                         "score shots $shotOk/${shots.size}"
                                 )
                             }, "PeerLink-Log-Export").apply {
