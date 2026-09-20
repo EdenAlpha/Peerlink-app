@@ -31,6 +31,7 @@ has(engine, 'GAMEPLAY_PPS_MIN = 24', 'gameplay floor is 24 pps')
 has(engine, 'GAMEPLAY_PPS_MAX = 27', 'gameplay ceiling is 27 pps')
 has(engine, 'AUTO_CAPTURE_DELAY_MS = 0L', 'no five-minute wall-clock capture gate')
 has(engine, 'GAMEPLAY_ARM_SAMPLES = 15', 'capture waits for 15s of 24-27pps kickoff flow')
+has(engine, '54B ignored — waiting for first 24-27pps kickoff and H/A lock', 'pre-match 54B does not start capture')
 
 # F32 Path A: 54B tail trigger
 has(engine, 'PATH_B_TRIGGER_PPS = 9', 'Path B deep-collapse trigger is below 9 pps')

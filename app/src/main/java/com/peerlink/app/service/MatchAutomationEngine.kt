@@ -163,7 +163,7 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
         MatchMarkerOverlay.setWaiting()
         MatchMarkerOverlay.show(context)
         ScoreCaptureDump.init(context)
-        AppState.appendLog("[MATCH-AUTO] Started: T0=first 24-27pps; capture arms after ${GAMEPLAY_ARM_SAMPLES}s of kickoff flow")
+        AppState.appendLog("[MATCH-AUTO] Started: capture only after first 24-27pps T0, ${GAMEPLAY_ARM_SAMPLES}s kickoff, and H/A lock")
     }
 
     fun stop() {
@@ -270,8 +270,11 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
             val mode = captureMode
             when (mode) {
                 null -> {
-                    // Idle: waiting for an end-of-match signal.
-                    if (smallArrived) {
+                    if (!rolesLocked) {
+                        if (smallArrived) {
+                            logCapture = "[MATCH-CAP ] 54B ignored — waiting for first 24-27pps kickoff and H/A lock"
+                        }
+                    } else if (smallArrived) {
                         smallPacketSeenThisMatch = true
                         enterModeLocked(CaptureMode.PATH_A_WATCH, now)
                         startProducer = true
