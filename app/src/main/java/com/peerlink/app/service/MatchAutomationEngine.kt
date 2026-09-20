@@ -84,7 +84,7 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
     /** A poll at or below this reads as the cliff (game feed dead). */
     private const val ZERO_PPS_THRESHOLD = 1
 
-    private const val AUTO_CAPTURE_DELAY_MS = 5 * 60_000L
+    private const val AUTO_CAPTURE_DELAY_MS = 0L
     private const val CAPTURE_INTERVAL_MS = 250L        // 4 fps
     private const val DISCONNECT_CONFIRM_MS = 135_000L
     private const val REMATCH_MIN_GAP_MS = 20_000L
@@ -160,7 +160,7 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
         MatchMarkerOverlay.setWaiting()
         MatchMarkerOverlay.show(context)
         ScoreCaptureDump.init(context)
-        AppState.appendLog("[MATCH-AUTO] Started: T0=first 24-27pps; capture on 54B-tail or <${PATH_B_TRIGGER_PPS}pps after 5:00")
+        AppState.appendLog("[MATCH-AUTO] Started: T0=first 24-27pps; capture on 54B-tail or <${PATH_B_TRIGGER_PPS}pps (no 5:00 gate)")
     }
 
     fun stop() {

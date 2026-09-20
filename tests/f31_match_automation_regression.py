@@ -29,7 +29,7 @@ native_kt = 'app/src/main/java/com/peerlink/app/tunnel/NativePeerLinkBackend.kt'
 has(engine, 'SIDE_PROMPT_PACKET_THRESHOLD = 200L', 'H/A prompt waits for 200 tunneled packets')
 has(engine, 'GAMEPLAY_PPS_MIN = 24', 'gameplay floor is 24 pps')
 has(engine, 'GAMEPLAY_PPS_MAX = 27', 'gameplay ceiling is 27 pps')
-has(engine, 'AUTO_CAPTURE_DELAY_MS = 5 * 60_000L', 'capture gate is exactly five minutes after T0')
+has(engine, 'AUTO_CAPTURE_DELAY_MS = 0L', 'capture can start immediately after T0')
 
 # F32 Path A: 54B tail trigger
 has(engine, 'PATH_B_TRIGGER_PPS = 9', 'Path B deep-collapse trigger is below 9 pps')
