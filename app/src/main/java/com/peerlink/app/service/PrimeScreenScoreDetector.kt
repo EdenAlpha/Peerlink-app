@@ -64,7 +64,7 @@ object PrimeScreenScoreDetector {
 
     /** Capture only. Kept separate so the 4 Hz producer is not blocked by reads. */
     fun captureFrame(context: Context): CapturedFrame? {
-        // Preferred path: v6 full display JPEG (statistics table included).
+        ScoreCaptureDump.init(context)
         PrimeClient.captureFullFrame()?.let { frame ->
             val bitmap = BitmapFactory.decodeByteArray(frame.bytes, 0, frame.bytes.size)
             if (bitmap == null) {
@@ -99,8 +99,14 @@ object PrimeScreenScoreDetector {
         }
 
         // A slow v4/v5 capture must not trigger two extra full screenshots.
-        if (PrimeClient.protocolVersion == 0 && !PrimeClient.isAlive()) return null
-        if (PrimeClient.protocolVersion >= 4) return null
+        if (PrimeClient.protocolVersion == 0 && !PrimeClient.isAlive()) {
+            AppState.appendLog("[MATCH-CAP ] no frame: PrimeServer dead protocol=0")
+            return null
+        }
+        if (PrimeClient.protocolVersion >= 4) {
+            AppState.appendLog("[MATCH-CAP ] no frame: fullcap/scorecap failed protocol=${PrimeClient.protocolVersion}")
+            return null
+        }
 
         // A v3 Prime daemon can survive an APK update until reboot/recovery.
         // Keep it usable by taking the old full PNG.
@@ -126,12 +132,21 @@ object PrimeScreenScoreDetector {
         val detection = try {
             ScoreBoardDetector.analyze(frame.bitmap, frame.geometry)
         } catch (error: Exception) {
-            AppState.appendLog("[MATCH-OCR ] analyze crashed ${error.javaClass.simpleName}: ${error.message} ${frame.bitmap.width}x${frame.bitmap.height}")
+            val note = "crash ${error.javaClass.simpleName}:${error.message} ${frame.bitmap.width}x${frame.bitmap.height}"
+            AppState.appendLog("[MATCH-OCR ] analyze $note")
+            ScoreCaptureDump.save(frame.bitmap, "crash", note)
             null
-        } ?: return null
+        }
+        if (detection == null) {
+            AppState.appendLog("[MATCH-OCR ] analyze=null ${frame.bitmap.width}x${frame.bitmap.height} (too small or failed)")
+            ScoreCaptureDump.save(frame.bitmap, "null", "analyze=null ${frame.bitmap.width}x${frame.bitmap.height}")
+            return null
+        }
         val analyzeMs = android.os.SystemClock.elapsedRealtime() - startedAt
         if (detection.type == ScoreBoardDetector.ScreenType.OTHER) {
-            AppState.appendLog("[MATCH-OCR ] F33 OTHER ${detection.gateInfo} ${frame.bitmap.width}x${frame.bitmap.height} ${analyzeMs}ms")
+            val note = "OTHER ${detection.gateInfo} ${frame.bitmap.width}x${frame.bitmap.height} ${analyzeMs}ms"
+            AppState.appendLog("[MATCH-OCR ] F33 $note")
+            ScoreCaptureDump.save(frame.bitmap, "OTHER", note)
             return null
         }
         val score = detection.score
@@ -148,19 +163,16 @@ object PrimeScreenScoreDetector {
                 ScoreBoardDetector.ScreenType.MENU -> "f33:menu"
                 ScoreBoardDetector.ScreenType.OTHER -> "f33"
             }
-            AppState.appendLog(
-                "[MATCH-OCR ] F33 ${detection.type} read ${score.first}-${score.second} " +
-                    "final=${detection.finality} stats=${matchStats?.rows?.size ?: 0} rows " +
-                    "${detection.gateInfo} ${frame.bitmap.width}x${frame.bitmap.height} ${analyzeMs}ms"
-            )
+            val note = "${detection.type} ${score.first}-${score.second} final=${detection.finality} stats=${matchStats?.rows?.size ?: 0} ${detection.gateInfo} ${analyzeMs}ms"
+            AppState.appendLog("[MATCH-OCR ] F33 $note")
+            ScoreCaptureDump.save(frame.bitmap, "${detection.type}_${score.first}-${score.second}", note)
             return Score(score.first, score.second, source, detection.finalScreen, matchStats)
         }
         AppState.appendLog("[MATCH-OCR ] F33 ${detection.type} no digits ${detection.gateInfo} — trying ML Kit")
         val ml = detectViaMlKit(frame)
-        AppState.appendLog(
-            if (ml == null) "[MATCH-OCR ] ML Kit produced no score"
-            else "[MATCH-OCR ] ML Kit ${ml.home}-${ml.away} source=${ml.source} final=${ml.finalScreen}"
-        )
+        val mlNote = if (ml == null) "MLKit none ${detection.gateInfo}" else "MLKit ${ml.home}-${ml.away} final=${ml.finalScreen}"
+        AppState.appendLog("[MATCH-OCR ] $mlNote")
+        ScoreCaptureDump.save(frame.bitmap, if (ml == null) "${detection.type}_nodigits" else "MLKIT_${ml.home}-${ml.away}", mlNote)
         return ml
     }
 

@@ -264,11 +264,14 @@ internal object ScoreBoardDetector {
         val pixels = IntArray(w * h)
         frame.getPixels(pixels, 0, w, 0, 0, w, h)
         val m = buildMasks(pixels, w, h)
-        val info = "hueY=${m.hueY} strict=${m.strictFrac}"
-        val out = Detection(ScreenType.OTHER, null, null, Finality.UNKNOWN, null, info)
+        val yellowNeed = max(300f, 0.0004f * w * h)
+        val yellowPx = m.strictFrac * w * h
+        fun info(why: String, extra: String = "") =
+            "why=$why hueY=${m.hueY} yellowPx=$yellowPx need=$yellowNeed strict=${m.strictFrac}$extra"
 
-        // universal pre-gate: no plausible yellow anywhere -> not a score frame
-        if (m.hueY <= 0f || m.strictFrac * w * h < max(300f, 0.0004f * w * h)) return out
+        if (m.hueY <= 0f || yellowPx < yellowNeed) {
+            return Detection(ScreenType.OTHER, null, null, Finality.UNKNOWN, null, info("no_yellow"))
+        }
 
         // banner presentations (stats board top / walking bottom): find boxes
         // F36 unknown-stays-unknown: a pair that passes the SHAPE validation
@@ -276,12 +279,16 @@ internal object ScoreBoardDetector {
         // pair then validates by READING, the frame must end unknown -- it
         // must never fall through to the menu reader, whose looser gates
         // once converted a safe "cannot read" into a confident wrong score.
-        var pairSeen = false
+        var pairSeen = 0
+        var unreadPairs = 0
         for ((A, B) in findScoreBoxes(m, w, h)) {
-            pairSeen = true
+            pairSeen++
             val hv = readBoxValue(m, A, minConf = 0.50f, minMargin = 0.04f)
             val av = readBoxValue(m, B, minConf = 0.50f, minMargin = 0.04f)
-            if (hv == null || av == null) continue
+            if (hv == null || av == null) {
+                unreadPairs++
+                continue
+            }
             val home: Int
             val away: Int
             if (A.x0 < B.x0) { home = hv; away = av } else { home = av; away = hv }
@@ -292,6 +299,7 @@ internal object ScoreBoardDetector {
             } else {
                 rows = tableRows(m, max(A.y1, B.y1), A, B, w, h)
             }
+            val extra = " pairs=$pairSeen unread=$unreadPairs boxA=${A.w}x${A.h}@${A.x0},${A.y0} boxB=${B.w}x${B.h}@${B.x0},${B.y0} rows=${rows?.size ?: 0} strip=${strip != null}"
             return if (rows != null && rows.size >= 4) {
                 val statRows = ArrayList<StatRow>(rows.size)
                 for (r in rows) {
@@ -300,21 +308,28 @@ internal object ScoreBoardDetector {
                     }
                 }
                 val fin = if (strip != null) readStripLabel(m, strip, A, B) else Finality.UNKNOWN
-                Detection(ScreenType.STATS_BOARD, home, away, fin, Stats(statRows), info)
+                Detection(ScreenType.STATS_BOARD, home, away, fin, Stats(statRows), info("stats_board", extra))
             } else {
-                Detection(ScreenType.WALKING, home, away, Finality.UNKNOWN, null, info)
+                Detection(ScreenType.WALKING, home, away, Finality.UNKNOWN, null, info("walking", extra))
             }
         }
 
-        if (pairSeen) return out   // unknown, full stop -- never menu (F36)
+        if (pairSeen > 0) {
+            return Detection(
+                ScreenType.OTHER, null, null, Finality.UNKNOWN, null,
+                info("pair_unread", " pairs=$pairSeen unread=$unreadPairs"),
+            )
+        }
 
-        // menu presentation: big yellow digits on dark, no boxes
         val menu = findMenuScore(m, w, h)
         if (menu != null) {
             val fin = readMenuFinality(m, menu.first, menu.second)
-            return Detection(ScreenType.MENU, menu.third, menu.fourth, fin, null, info)
+            return Detection(
+                ScreenType.MENU, menu.third, menu.fourth, fin, null,
+                info("menu", " home=${menu.third} away=${menu.fourth}"),
+            )
         }
-        return out
+        return Detection(ScreenType.OTHER, null, null, Finality.UNKNOWN, null, info("no_structure"))
     }
 
     // ----------------------------------------------------------------------

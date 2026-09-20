@@ -373,20 +373,26 @@ class MainActivity : AppCompatActivity(), NsdDiscovery.NsdCallback {
                                     .getOrDefault("")
                                 val traceOk = udpTrace.isBlank() ||
                                     saveLogsToDownloads("peerlink_udp_trace_$stamp.csv", udpTrace)
+                                val shots = com.peerlink.app.service.ScoreCaptureDump.exportedFiles()
+                                var shotOk = 0
+                                for (shot in shots) {
+                                    val mime = if (shot.name.endsWith(".jpg")) "image/jpeg" else "text/plain"
+                                    if (saveFileToDownloads("peerlink_${stamp}_${shot.name}", shot, mime)) shotOk++
+                                }
                                 runOnUiThread {
                                     android.widget.Toast.makeText(
                                         this@MainActivity,
                                         when {
                                             !logOk || !traceOk -> "Export incomplete — check Downloads access"
-                                            udpTrace.isBlank() -> "Match log saved; no UDP timing trace was available"
-                                            else -> "Match log + lightweight UDP timing trace saved to Downloads"
+                                            else -> "Saved match log, UDP trace, and $shotOk score shots to Downloads"
                                         },
                                         android.widget.Toast.LENGTH_LONG
                                     ).show()
                                 }
                                 AppState.appendLog(
                                     "[EXPORT ] Match log chars=${fullLog.length} ok=$logOk; " +
-                                        "UDP timing trace chars=${udpTrace.length} ok=$traceOk rawBytes=off"
+                                        "UDP timing trace chars=${udpTrace.length} ok=$traceOk; " +
+                                        "score shots $shotOk/${shots.size}"
                                 )
                             }, "PeerLink-Log-Export").apply {
                                 isDaemon = true

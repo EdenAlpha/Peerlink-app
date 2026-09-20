@@ -159,6 +159,7 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
         MatchControlChannel.start(this)
         MatchMarkerOverlay.setWaiting()
         MatchMarkerOverlay.show(context)
+        ScoreCaptureDump.init(context)
         AppState.appendLog("[MATCH-AUTO] Started: T0=first 24-27pps; capture on 54B-tail or <${PATH_B_TRIGGER_PPS}pps after 5:00")
     }
 
@@ -467,6 +468,7 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
         }
         if (!manualCaptureBusy.compareAndSet(false, true)) return
         AppState.appendLog("[MATCH-FT  ] Manual FT tap")
+        AppState.appendLog("[MATCH-FT  ] candidate=${confirmedCandidate()?.let { "${it.home}-${it.away}" } ?: "none"} hits=$autoCandidateHits")
         scope.launch {
             try {
                 val candidate = confirmedCandidate()
@@ -515,6 +517,10 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
 
                 val captured = PrimeScreenScoreDetector.captureScore(context)
                 val score = captured ?: candidate
+                AppState.appendLog(
+                    "[MATCH-FT  ] foreground=true captured=${captured?.let { "${it.home}-${it.away}/${it.source}/final=${it.finalScreen}" } ?: "null"} " +
+                        "candidate=${candidate?.let { "${it.home}-${it.away}" } ?: "none"} using=${if (captured != null) "new-photo" else if (candidate != null) "toasted-candidate" else "nothing"}"
+                )
                 if (score == null) {
                     main.post { Toast.makeText(context, "Final score not visible — keep the result visible and retry", Toast.LENGTH_SHORT).show() }
                     return@launch
