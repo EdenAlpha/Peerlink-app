@@ -78,7 +78,14 @@ object MatchTracker {
      */
     fun markGameplayStarted() {
         synchronized(lock) {
-            if (!sessionActive || epochSealed) return
+            if (!sessionActive) return
+            if (epochSealed) {
+                // Rematch after a sealed result: the automation engine already
+                // reset roles/candidates, so open a fresh epoch instead of
+                // silently dropping every score commit for the new match.
+                epochSealed = false
+                epochStartWallMs = 0L
+            }
             if (epochStartWallMs == 0L) {
                 epochStartWallMs = System.currentTimeMillis()
                 epochOrdinal++
