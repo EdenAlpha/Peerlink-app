@@ -610,11 +610,22 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
                         }
                         if (!stillValid) {
                             AppState.appendLog("[MATCH-OCR ] drop stale frame score=${score?.home}-${score?.away}")
+                        } else if (score != null && score.source.contains("menu") && !score.finalScreen) {
+                            // Lobby and other menu screens have no match score on
+                            // them, yet their loose digit gates produce garbage
+                            // reads (2-5 from "Opponent is choosing settings").
+                            // Only the result menu (final=true) may become a
+                            // candidate; everything else is discarded here.
+                            AppState.appendLog("[MATCH-OCR ] discard menu read ${score.home}-${score.away} (finality unknown)")
                         } else if (score != null && registerAutomaticCandidate(score, generation, burst)) {
                             val efootball = PrimeClient.isPackageForeground(EFOOTBALL_PACKAGE)
                             AppState.appendLog("[MATCH-OCR ] candidate ${score.home}-${score.away} src=${score.source} final=${score.finalScreen} efootball=$efootball hits=$autoCandidateHits")
                             if (efootball == true) {
-                                if (score.finalScreen) {
+                                if (score.finalScreen && !score.source.contains("menu")) {
+                                    // Auto-commit only calibrated stats-board reads.
+                                    // The result menu has misread digits before
+                                    // (2-2 from a 1-1 screen), so menu evidence
+                                    // stays candidate-only and waits for the FT tap.
                                     if (commitDetectedScore(score, "auto", generation, burst)) break
                                 } else if (!confirmationPrompted) {
                                     confirmationPrompted = true
