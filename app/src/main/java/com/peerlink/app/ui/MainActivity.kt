@@ -356,8 +356,9 @@ class MainActivity : AppCompatActivity(), NsdDiscovery.NsdCallback {
                         onSetupPrimeMode = { showPrimeSetup = true },
                         openBatterySettings = { openBatteryProtectionSettings() },
                         exportMatchLogs = {
-                            // Trace assembly can be several MB. Keep CSV formatting
-                            // and Downloads I/O off the UI and packet threads.
+                            // Trace assembly can be several MB. Keep zip
+                            // assembly and Downloads I/O off the UI and
+                            // packet threads.
                             Thread({
                                 // Read the FULL session log from the session file
                                 // (both appendLog and appendFileOnly entries).
@@ -367,32 +368,57 @@ class MainActivity : AppCompatActivity(), NsdDiscovery.NsdCallback {
                                     AppState.appendLog("[EXPORT ] Failed to read session file: ${t.message}")
                                     AppState.getLogs()
                                 }
-                                val stamp = System.currentTimeMillis()
-                                val logOk = saveLogsToDownloads("peerlink_match_$stamp.txt", fullLog)
                                 val udpTrace = runCatching { PeerLinkVpnService.dumpNativeUdpTrace() }
                                     .getOrDefault("")
-                                val traceOk = udpTrace.isBlank() ||
-                                    saveLogsToDownloads("peerlink_udp_trace_$stamp.csv", udpTrace)
                                 val shots = com.peerlink.app.service.ScoreCaptureDump.exportedFiles()
-                                var shotOk = 0
-                                for (shot in shots) {
-                                    val mime = if (shot.name.endsWith(".jpg")) "image/jpeg" else "text/plain"
-                                    if (saveFileToDownloads("peerlink_${stamp}_${shot.name}", shot, mime)) shotOk++
+
+                                // Bundle EVERYTHING into a single zip file.
+                                val entries = mutableListOf<ZipEntryData>()
+                                entries.add(ZipEntryData(name = "match_log.txt", text = fullLog))
+                                if (udpTrace.isNotBlank()) {
+                                    entries.add(ZipEntryData(name = "udp_trace.csv", text = udpTrace))
                                 }
+                                for (shot in shots) {
+                                    entries.add(ZipEntryData(name = "score_shots/${shot.name}", file = shot))
+                                }
+                                entries.add(
+                                    ZipEntryData(
+                                        name = "manifest.txt",
+                                        text = buildString {
+                                            appendLine("PeerLink match export")
+                                            appendLine(
+                                                "Created: " + java.text.SimpleDateFormat(
+                                                    "yyyy-MM-dd HH:mm:ss", java.util.Locale.US
+                                                ).format(java.util.Date())
+                                            )
+                                            appendLine("Contents:")
+                                            appendLine("- match_log.txt : full session log")
+                                            if (udpTrace.isNotBlank()) {
+                                                appendLine("- udp_trace.csv : UDP timing trace")
+                                            }
+                                            if (shots.isNotEmpty()) {
+                                                appendLine("- score_shots/  : ${shots.size} score capture shot(s)")
+                                            }
+                                        }
+                                    )
+                                )
+
+                                val stamp = System.currentTimeMillis()
+                                val fileName = "peerlink_match_$stamp.zip"
+                                val ok = saveZipToDownloads(fileName, entries)
                                 runOnUiThread {
                                     android.widget.Toast.makeText(
                                         this@MainActivity,
-                                        when {
-                                            !logOk || !traceOk -> "Export incomplete — check Downloads access"
-                                            else -> "Saved match log, UDP trace, and $shotOk score shots to Downloads"
-                                        },
+                                        if (ok) "Saved single-file export: $fileName"
+                                        else "Export failed — check Downloads access",
                                         android.widget.Toast.LENGTH_LONG
                                     ).show()
                                 }
                                 AppState.appendLog(
-                                    "[EXPORT ] Match log chars=${fullLog.length} ok=$logOk; " +
-                                        "UDP timing trace chars=${udpTrace.length} ok=$traceOk rawBytes=off; " +
-                                        "score shots $shotOk/${shots.size}"
+                                    "[EXPORT ] Single-file export $fileName ok=$ok; " +
+                                        "log chars=${fullLog.length}; " +
+                                        "UDP timing trace chars=${udpTrace.length} rawBytes=off; " +
+                                        "score shots ${shots.size}"
                                 )
                             }, "PeerLink-Log-Export").apply {
                                 isDaemon = true
@@ -1256,6 +1282,42 @@ class MainActivity : AppCompatActivity(), NsdDiscovery.NsdCallback {
                 )
                 startActivity(fallback)
             } catch (_: Throwable) { }
+        }
+    }
+
+    /** One entry of the single-file export bundle. */
+    private data class ZipEntryData(val name: String, val text: String? = null, val file: File? = null)
+
+    /**
+     * Saves everything about a match into ONE zip file in Downloads.
+     * Replaces the old behavior of writing the log, the UDP trace and every
+     * score shot as separate files.
+     */
+    private fun saveZipToDownloads(filename: String, entries: List<ZipEntryData>): Boolean {
+        return try {
+            val values = ContentValues().apply {
+                put(MediaStore.Downloads.DISPLAY_NAME, filename)
+                put(MediaStore.Downloads.MIME_TYPE, "application/zip")
+            }
+            val uri = contentResolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
+                ?: return false
+            contentResolver.openOutputStream(uri)?.use { output ->
+                java.util.zip.ZipOutputStream(output.buffered(1024 * 1024)).use { zip ->
+                    for (entry in entries) {
+                        zip.putNextEntry(java.util.zip.ZipEntry(entry.name))
+                        if (entry.text != null) {
+                            zip.write(entry.text.toByteArray(Charsets.UTF_8))
+                        } else entry.file?.inputStream()?.buffered(1024 * 1024)?.use { input ->
+                            input.copyTo(zip, 1024 * 1024)
+                        }
+                        zip.closeEntry()
+                    }
+                }
+            } ?: return false
+            true
+        } catch (e: Exception) {
+            Log.e("MainActivity", "saveZipToDownloads failed: ${e.message}", e)
+            false
         }
     }
 
