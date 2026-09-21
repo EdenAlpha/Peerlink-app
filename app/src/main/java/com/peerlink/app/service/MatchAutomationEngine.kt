@@ -526,7 +526,23 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
                 }
 
                 val captured = PrimeScreenScoreDetector.captureScore(context)
-                val score = captured ?: candidate
+                // A confirmed candidate (the same score read repeatedly on the
+                // calibrated stats board) outranks a fresh read from an
+                // uncalibrated surface. Menu and lobby screens have misread
+                // digits before (e.g. "2-2" from a 1-1 result menu), so never
+                // let a menu capture override board evidence.
+                val score = when {
+                    captured == null -> candidate
+                    candidate == null -> captured
+                    captured.source.contains("menu") && !candidate.source.contains("menu") -> {
+                        AppState.appendLog(
+                            "[MATCH-FT  ] menu read ${captured.home}-${captured.away} ignored; " +
+                                "using board candidate ${candidate.home}-${candidate.away} (hits confirmed)"
+                        )
+                        candidate
+                    }
+                    else -> captured
+                }
                 AppState.appendLog(
                     "[MATCH-FT  ] foreground=true captured=${captured?.let { "${it.home}-${it.away}/${it.source}/final=${it.finalScreen}" } ?: "null"} " +
                         "candidate=${candidate?.let { "${it.home}-${it.away}" } ?: "none"} using=${if (captured != null) "new-photo" else if (candidate != null) "toasted-candidate" else "nothing"}"
