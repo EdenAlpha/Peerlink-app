@@ -97,7 +97,13 @@ class BootReceiver : BroadcastReceiver() {
                 val result = PrimeShizukuBootstrapEngine(context).start(
                     needBootstrap = false,
                     cachedPort = 0,
-                    discoverTimeoutMs = 3_000L,
+                    // Wireless debugging takes a while to come up after a
+                    // reboot (adbd advertises only once the Wi-Fi stack and
+                    // the debugging service are ready). Shizuku's model is
+                    // "start steps are repeated after each reboot" — a 3s
+                    // window almost always missed the advertisement and left
+                    // the engine dead until the user re-did everything.
+                    discoverTimeoutMs = 20_000L,
                 )
                 if (result is PrimeShizukuBootstrapEngine.Result.Success) {
                     AppState.appendLog("[BOOT      ] Prime engine auto-started via 127.0.0.1:${result.port}")
