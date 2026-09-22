@@ -7,6 +7,7 @@ import android.os.Looper
 import android.os.SystemClock
 import android.widget.Toast
 import com.peerlink.app.core.AppState
+import com.peerlink.app.core.MatchPhase
 import com.peerlink.app.core.MatchTracker
 import com.peerlink.app.godmode.PrimeClient
 import com.peerlink.app.tunnel.NativeBackendStats
@@ -34,12 +35,16 @@ import kotlin.math.roundToInt
  *  PATH A — 54B tail. The game's dying tick stream shrinks its payload to a
  *  uniform ~54 bytes (never seen anywhere else across whole captures: goals,
  *  half-time, replays and transient dips — lowest observed dip 17pps — all
- *  ride 89-243B payloads) roughly 1s before the PPS cliff. On the first
- *  <55B game packet after the 5-minute gate we start 4fps capture, then
+ *  ride 89-243B payloads) roughly 1s before the PPS cliff. The goodbye is a
+ *  burst, not a stray: field traces show 45 len-54 packets exchanged in
+ *  ~1.1s (20+ per direction), while mid-game strays are 1-2 packets. Only a
+ *  burst (>= PATH_A_MIN_BURST in one 1Hz poll) opens the 4fps capture; lone
+ *  54Bs are logged and ignored, and they no longer disarm Path B. We then
  *  expect the game feed to reach ~0pps within 3s (the cliff is 27->0 in
  *  ~2-3s, never a gradual slope). Confirmed cliff -> keep capturing at most
- *  7 more seconds while score reading runs; a verified score stops capture
- *  early. No cliff within 3s -> pause capture for up to 1.5s; if the feed
+ *  20 more seconds while score reading runs (the stats board appears only
+ *  after the result menu, so the tail must outlive it); a verified score
+ *  stops capture early. No cliff within 3s -> pause capture for up to 1.5s; if the feed
  *  reaches ~0pps inside that window (delayed cliff), capture resumes and all
  *  frames feed the reader; otherwise the 54B was noise and the burst ends.
  *
@@ -78,8 +83,15 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
     private const val ZERO_PPS_CONFIRM_MS = 3_000L
     /** Path A pause: wait this long for a delayed cliff before giving up. */
     private const val PAUSE_WINDOW_MS = 1_500L
-    /** Path A tail budget after a confirmed cliff. */
-    private const val PATH_A_TAIL_MS = 7_000L
+    /** Path A tail budget after a confirmed cliff. The stats board only
+     *  appears once the user navigates past the result menu, so the tail
+     *  must outlive the menu or the auto-commit never sees the board. */
+    private const val PATH_A_TAIL_MS = 20_000L
+
+    /** A real goodbye burst sends 20+ len-54 packets per 1 Hz poll (45 in
+     *  ~1.1s in field traces); a stray mid-game 54B shows up as 1-2. Below
+     *  this the packet is noted but must not open a capture burst. */
+    private const val PATH_A_MIN_BURST = 6
 
     /** A poll at or below this reads as the cliff (game feed dead). */
     private const val ZERO_PPS_THRESHOLD = 1
@@ -97,7 +109,7 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
     private enum class CaptureMode {
         /** 54B seen; waiting up to 3s for the 0pps cliff. */
         PATH_A_WATCH,
-        /** 54B seen, cliff confirmed; tail burst (<=7s). */
+        /** 54B seen, cliff confirmed; tail burst (<=20s). */
         PATH_A_TAIL,
         /** 54B seen, no cliff in 3s; capture paused, watching <=1.5s. */
         PATH_A_PAUSE,
@@ -275,10 +287,14 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
                             logCapture = "[MATCH-CAP ] 54B ignored — waiting for first 24-27pps kickoff and H/A lock"
                         }
                     } else if (smallArrived) {
-                        smallPacketSeenThisMatch = true
-                        enterModeLocked(CaptureMode.PATH_A_WATCH, now)
-                        startProducer = true
-                        logCapture = "[MATCH-CAP ] 54B tail detected -> Path A capture (4fps), expecting ~0pps within ${ZERO_PPS_CONFIRM_MS / 1000}s"
+                        if (smallDelta >= PATH_A_MIN_BURST) {
+                            smallPacketSeenThisMatch = true
+                            enterModeLocked(CaptureMode.PATH_A_WATCH, now)
+                            startProducer = true
+                            logCapture = "[MATCH-CAP ] 54B burst ($smallDelta) -> Path A capture (4fps), expecting ~0pps within ${ZERO_PPS_CONFIRM_MS / 1000}s"
+                        } else {
+                            logCapture = "[MATCH-CAP ] lone 54B ($smallDelta) ignored — not a goodbye burst"
+                        }
                     } else if (!smallPacketSeenThisMatch && signal in 1 until PATH_B_TRIGGER_PPS && now >= pathBCooldownUntilMs) {
                         if (pathBTriggerSinceMs == 0L) {
                             pathBTriggerSinceMs = now
@@ -552,7 +568,15 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
                     return@launch
                 }
                 val mode = if (captured != null) "manual" else "manual-candidate"
-                commitDetectedScore(score, mode, generation)
+                if (!commitDetectedScore(score, mode, generation)) {
+                    main.post {
+                        Toast.makeText(
+                            context,
+                            "Score ${score.home}–${score.away} read but NOT saved — see match log",
+                            Toast.LENGTH_LONG,
+                        ).show()
+                    }
+                }
             } finally {
                 manualCaptureBusy.set(false)
             }
@@ -727,7 +751,14 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
             val mine = if (side == MatchControlChannel.Side.HOME) score.home else score.away
             val theirs = if (side == MatchControlChannel.Side.HOME) score.away else score.home
             // Serialize validation and ledger commit against stop, rematch and competing OCR.
-            if (!MatchTracker.confirmScreenScore(mine, theirs, "$mode:${score.source}", score.stats)) return false
+            if (!MatchTracker.confirmScreenScore(mine, theirs, "$mode:${score.source}", score.stats)) {
+                val phase = MatchTracker.state.value.phase
+                AppState.appendLog(
+                    "[MATCH-OCR ] Commit rejected ${score.home}-${score.away} ($mode): tracker phase=$phase" +
+                        (if (phase == MatchPhase.SEALED) " — sealed epoch; rematch was not registered" else "")
+                )
+                return false
+            }
             scoreConfirmed = true
             scoreConfirmedAtMs = SystemClock.elapsedRealtime()
             MatchMarkerOverlay.setWaiting()
@@ -832,6 +863,11 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
         }
         MatchControlChannel.sendReset()
         MatchMarkerOverlay.beginSideSelection()
+        // Reopening the tracker epoch is not optional: the previous result
+        // sealed it, and confirmScreenScore rejects every commit while
+        // sealed. Without this call the rematch's scores — auto and FT-tap
+        // alike — fail silently for the whole match.
+        MatchTracker.markGameplayStarted()
         AppState.appendLog("[MATCH-AUTO] New sustained 24-27pps flow after result -> rematch T0 and H/A reset")
     }
 
