@@ -988,6 +988,7 @@ object GodModeManager {
                     AppState.appendLog("[PRIME-MODE ] Bootstrap reported failure but PrimeServer is alive — continuing")
                 } else {
                     AppState.appendLog("[PRIME-MODE ] Bootstrap FAILED: ${result.reason}${result.throwable?.let { " — ${it.message}" } ?: ""}")
+                    readPrimeCrashReport()
                     saveBootstrapStatus("PENDING: ${result.reason}")
                     updateSetupSnapshot(primeServerAlive = false)
                     setState(State.ERROR, result.reason)
@@ -1029,6 +1030,23 @@ object GodModeManager {
         updateSetupSnapshot(primeServerAlive = false)
         setState(State.ERROR, "Prime Server failed to start")
         return false
+    }
+
+    /**
+     * Surfaces a PrimeServer crash report written by the server's crash trap
+     * (/data/local/tmp/peerlink_prime_crash.txt). The file is consumed after
+     * reading so the log line appears once per crash instead of on every
+     * unreachable-retry tick.
+     */
+    private fun readPrimeCrashReport() {
+        runCatching {
+            val f = java.io.File("/data/local/tmp/peerlink_prime_crash.txt")
+            if (f.isFile) {
+                val text = f.readText().take(1_000)
+                f.delete()
+                if (text.isNotBlank()) AppState.appendLog("[PRIME-CRASH] $text")
+            }
+        }
     }
 
     fun runUserShell(command: String, timeoutMs: Int = 30_000): PrimeExecResult {

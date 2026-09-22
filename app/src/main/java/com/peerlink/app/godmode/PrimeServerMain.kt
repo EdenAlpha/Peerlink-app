@@ -51,6 +51,23 @@ object PrimeServerMain {
             Looper.prepareMainLooper()
         }
 
+        // Crash trap: the server runs headless as shell uid, so a crash used
+        // to leave the app showing only "PrimeServer not reachable" with no
+        // cause. Persist the throwable to a file the app can read on its next
+        // start, then rethrow on an uncaught-exception default path.
+        val crashFile = java.io.File("/data/local/tmp/peerlink_prime_crash.txt")
+        Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+            runCatching {
+                crashFile.writeText(
+                    "time=${System.currentTimeMillis()}\n" +
+                        "thread=${thread.name}\n" +
+                        android.util.Log.getStackTraceString(throwable)
+                )
+            }
+            android.util.Log.e("PrimeServer", "FATAL uncaught", throwable)
+            android.os.Process.killProcess(android.os.Process.myPid())
+        }
+
         // runForever() is an infinite ServerSocket.accept() loop.
         // It never returns. Looper.loop() after it is unreachable dead code
         // — removed to match Shizuku's pattern and avoid confusion.
@@ -61,6 +78,17 @@ object PrimeServerMain {
             System.err.println("PrimeServer refused to start without a valid authentication token")
             return
         }
-        PrimeServer.runForever(token)
+        try {
+            PrimeServer.runForever(token)
+        } catch (t: Throwable) {
+            runCatching {
+                crashFile.writeText(
+                    "time=${System.currentTimeMillis()}\n" +
+                        "thread=main\n" +
+                        android.util.Log.getStackTraceString(t)
+                )
+            }
+            throw t
+        }
     }
 }

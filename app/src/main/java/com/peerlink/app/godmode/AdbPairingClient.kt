@@ -40,7 +40,11 @@ class AdbPairingClient(private val context: Context) {
     fun pair(host: String, port: Int, pin: String): Result {
         Log.i(TAG, "Pairing → $host:$port …")
         return try {
-            val manager = PeerLinkAdbManager.getInstance(context)
+            // Shizuku treats pairing and connecting as independent clients with
+            // no shared state. libadb's connection manager carries TLS/stream
+            // state from the previous operation, so start pairing from a clean
+            // instance — same reset the bootstrap does before connect.
+            val manager = PeerLinkAdbManager.resetInstance(context)
             manager.pair(host, port, pin)
             Log.i(TAG, "✅ libadb-android pairing succeeded")
             AdbKeyManager.markPaired(context, true)
