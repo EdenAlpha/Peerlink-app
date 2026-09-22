@@ -64,6 +64,9 @@ import com.peerlink.app.core.AppState
 import com.peerlink.app.core.CrashLogger
 import com.peerlink.app.core.LiveMatchState
 import com.peerlink.app.core.MatchPhase
+import com.peerlink.app.core.MatchRecord
+import com.peerlink.app.core.MatchResult
+import com.peerlink.app.core.MatchStatRow
 import com.peerlink.app.core.MatchStore
 import com.peerlink.app.core.MatchTracker
 import com.peerlink.app.core.PeerCoinStats
@@ -740,12 +743,17 @@ private data class Tool(val key: String, val label: String, val icon: ImageVecto
             runCatching { MatchStore.stats(context) }.getOrDefault(stats)
         }
     }
-    Column(Modifier.fillMaxSize().padding(horizontal = 20.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(20.dp)) {
+    val me = remember {
+        context.getSharedPreferences("peerlink_prefs", Context.MODE_PRIVATE)
+            .getString("username", "")?.trim().orEmpty().ifBlank { "You" }
+    }
+    val history = remember(stats.records) { stats.records.sortedByDescending { it.endedAtMs } }
+    Column(Modifier.fillMaxSize().padding(horizontal = 20.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(18.dp)) {
         Spacer(Modifier.height(4.dp))
         Text("Your activity", color = PL.ink, fontSize = 28.sp, fontWeight = FontWeight.Bold, letterSpacing = (-0.5).sp)
         Text("Your matches and PeerCoins, together.", color = PL.inkSoft, fontSize = 14.sp)
         Spacer(Modifier.height(2.dp))
-        if (live.phase != MatchPhase.NO_MATCH) LiveScoreCard(live)
+        MatchHeroCard(live, me, history.firstOrNull())
         Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(28.dp))
             .background(Brush.linearGradient(listOf(Color(0xFF302C44), Color(0xFF242331))))
             .padding(24.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -761,58 +769,183 @@ private data class Tool(val key: String, val label: String, val icon: ImageVecto
             CoinTile(Modifier.weight(1f), "Settled", "${stats.matchCount}", PL.ink)
             CoinTile(Modifier.weight(1f), "Wins", "${stats.wins}", PL.green)
         }
-        if (stats.records.isEmpty()) Column(modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp)) {
+        if (history.isEmpty()) Column(modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp)) {
             Text("No matches yet", color = PL.ink, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.height(6.dp))
             Text("Connect with a nearby player to get started. Completed sessions appear here.", color = PL.inkSoft, fontSize = 13.sp, lineHeight = 20.sp)
         }
-        stats.records.takeLast(5).asReversed().forEach { match ->
-            Column(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text(match.opponentName, fontSize = 13.sp, fontWeight = FontWeight.Bold, color = PL.ink)
-                        Text(
-                            if (match.confirmed) "Verified and settled" else (match.settlementNote ?: "Unverified — no coins"),
-                            fontSize = 10.sp,
-                            color = if (match.confirmed) PL.green else PL.gold,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                    Text(
-                        "${match.myGoals} – ${match.opponentGoals}",
-                        fontSize = 18.sp, fontWeight = FontWeight.ExtraBold, color = PL.ink,
-                    )
-                    Spacer(Modifier.width(10.dp))
-                    Text(
-                        (if (match.settledReward.totalCents > 0) "+" else "") + formatCents(match.settledReward.totalCents),
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = if (match.settledReward.totalCents > 0) PL.green else if (match.settledReward.totalCents < 0) PL.red else PL.muted,
-                    )
-                }
-            }
+        if (history.isNotEmpty()) {
+            Text("Match history", color = PL.ink, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+        }
+        history.take(8).forEach { match ->
+            MatchHistoryCard(match)
         }
         Text("Only matches verified from the eFootball final result screen can change this balance.", fontSize = 12.sp, color = PL.inkSoft, lineHeight = 18.sp, modifier = Modifier.padding(4.dp))
     }
 }
 
-@Composable private fun LiveScoreCard(state: LiveMatchState) {
-    DarkCard(padding = 14.dp) {
-        LiveScoreContent(state)
-        if (state.statusNote.isNotBlank()) {
-            Spacer(Modifier.height(6.dp))
-            Text(state.statusNote, fontSize = 10.sp, color = PL.muted)
+/* ─── Match hero: live or latest completed match, stats pinned ─── */
+@Composable private fun MatchHeroCard(live: LiveMatchState, me: String, lastMatch: MatchRecord?) {
+    val liveActive = live.phase != MatchPhase.NO_MATCH
+    if (!liveActive && lastMatch == null) return
+    var expanded by rememberSaveable { mutableStateOf(false) }
+
+    val opponent = (if (liveActive) live.opponentName else lastMatch?.opponentName.orEmpty()).ifBlank { "Opponent" }
+    val home = if (liveActive) live.myGoals else lastMatch?.myGoals ?: 0
+    val away = if (liveActive) live.opponentGoals else lastMatch?.opponentGoals ?: 0
+    val rows = if (liveActive) live.stats?.rows ?: live.lastCompleted?.stats?.rows else lastMatch?.stats?.rows
+    val finished = !liveActive && lastMatch != null
+
+    Column(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(28.dp))
+            .background(Brush.linearGradient(listOf(Color(0xFF232733), Color(0xFF1A1D26))))
+            .border(1.dp, Color.White.copy(alpha = 0.07f), RoundedCornerShape(28.dp))
+            .padding(20.dp)
+    ) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            if (liveActive) LivePhaseBadge(live.phase) else if (lastMatch != null) ResultPill(lastMatch.result)
+            Spacer(Modifier.weight(1f))
+            Text(
+                if (liveActive) live.statusNote.ifBlank { "Match in progress" }
+                else java.text.SimpleDateFormat("MMM d · HH:mm", java.util.Locale.getDefault()).format(java.util.Date(lastMatch!!.endedAtMs)),
+                fontSize = 10.sp, color = PL.muted, maxLines = 1, overflow = TextOverflow.Ellipsis,
+            )
         }
-        val rows = state.stats?.rows ?: state.lastCompleted?.stats?.rows
-        if (!rows.isNullOrEmpty()) {
+        Spacer(Modifier.height(16.dp))
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(me, fontSize = 13.sp, fontWeight = FontWeight.Bold, color = PL.ink, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text("YOU", fontSize = 9.sp, fontWeight = FontWeight.ExtraBold, color = PL.indigoGlow, letterSpacing = 1.2.sp)
+            }
+            Crossfade(targetState = "$home – $away", label = "heroScore") { score ->
+                Text(score, fontSize = 34.sp, fontWeight = FontWeight.ExtraBold, color = PL.ink, letterSpacing = (-1).sp)
+            }
+            Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+                Text(opponent, fontSize = 13.sp, fontWeight = FontWeight.Bold, color = PL.ink, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text("OPPONENT", fontSize = 9.sp, fontWeight = FontWeight.ExtraBold, color = PL.gold, letterSpacing = 1.2.sp)
+            }
+        }
+        if (finished && lastMatch != null) {
             Spacer(Modifier.height(10.dp))
-            rows.forEach { row ->
-                Row(Modifier.fillMaxWidth().padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text(statLabel(row.name), fontSize = 11.sp, color = PL.inkSoft, modifier = Modifier.weight(1f))
-                    Text("${row.home}", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = PL.ink)
-                    Text(" – ", fontSize = 12.sp, color = PL.muted)
-                    Text("${row.away}", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = PL.ink)
+            Text(
+                text = when (lastMatch.result) {
+                    MatchResult.WIN -> "Victory — nice one"
+                    MatchResult.LOSS -> "Defeat — take the rematch"
+                    MatchResult.DRAW -> "All square"
+                } + (if (lastMatch.settledReward.totalCents != 0L) "  ·  " +
+                    (if (lastMatch.settledReward.totalCents > 0) "+" else "") +
+                    formatCents(lastMatch.settledReward.totalCents) else ""),
+                fontSize = 11.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = when (lastMatch.result) { MatchResult.WIN -> PL.green; MatchResult.LOSS -> PL.red; MatchResult.DRAW -> PL.gold },
+                modifier = Modifier.fillMaxWidth(),
+                textAlign = TextAlign.Center,
+            )
+        }
+        if (!rows.isNullOrEmpty()) {
+            Spacer(Modifier.height(12.dp))
+            val rotation by animateFloatAsState(if (expanded) 180f else 0f, label = "heroChevron")
+            Row(
+                Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable { expanded = !expanded }.padding(vertical = 8.dp, horizontal = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("Match statistics", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = PL.inkSoft)
+                Spacer(Modifier.weight(1f))
+                Icon(Icons.Rounded.ExpandMore, null, tint = PL.muted, modifier = Modifier.size(18.dp).graphicsLayer { rotationZ = rotation })
+            }
+            AnimatedVisibility(visible = expanded) { StatsTable(rows) }
+        }
+    }
+}
+
+@Composable private fun LivePhaseBadge(phase: MatchPhase) {
+    val label = when (phase) { MatchPhase.LIVE -> "LIVE"; MatchPhase.SEALED -> "SEALED"; else -> "WAITING" }
+    val color = if (phase == MatchPhase.LIVE) PL.green else PL.gold
+    val pulse = rememberInfiniteTransition(label = "livePulse")
+    val alpha by pulse.animateFloat(0.35f, 1f, infiniteRepeatable(tween(900), RepeatMode.Reverse), label = "liveAlpha")
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(7.dp).background(color.copy(alpha = alpha), CircleShape))
+        Spacer(Modifier.width(6.dp))
+        Text(label, fontSize = 9.sp, fontWeight = FontWeight.ExtraBold, color = color, letterSpacing = 1.4.sp)
+    }
+}
+
+@Composable private fun ResultPill(result: MatchResult) {
+    val (label, color) = when (result) {
+        MatchResult.WIN -> "WIN" to PL.green
+        MatchResult.LOSS -> "LOSS" to PL.red
+        MatchResult.DRAW -> "DRAW" to PL.gold
+    }
+    Box(
+        Modifier.clip(RoundedCornerShape(50))
+            .background(color.copy(alpha = 0.14f))
+            .border(1.dp, color.copy(alpha = 0.35f), RoundedCornerShape(50))
+            .padding(horizontal = 10.dp, vertical = 4.dp)
+    ) { Text(label, fontSize = 9.sp, fontWeight = FontWeight.ExtraBold, color = color, letterSpacing = 1.2.sp) }
+}
+
+/* ─── Stats with comparison bars — pinned, they never vanish ─── */
+@Composable private fun StatsTable(rows: List<MatchStatRow>) {
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 6.dp)) {
+        rows.forEach { row ->
+            val total = (row.home + row.away).coerceAtLeast(1)
+            Column {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text("${row.home}", fontSize = 12.sp, fontWeight = FontWeight.Bold,
+                        color = if (row.home >= row.away) PL.indigoGlow else PL.muted, modifier = Modifier.width(30.dp))
+                    Text(statLabel(row.name), fontSize = 11.sp, color = PL.inkSoft, modifier = Modifier.weight(1f),
+                        textAlign = TextAlign.Center, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text("${row.away}", fontSize = 12.sp, fontWeight = FontWeight.Bold,
+                        color = if (row.away >= row.home) PL.gold else PL.muted, modifier = Modifier.width(30.dp), textAlign = TextAlign.End)
+                }
+                Spacer(Modifier.height(3.dp))
+                Row(Modifier.fillMaxWidth().height(4.dp).clip(RoundedCornerShape(50)).background(PL.bg)) {
+                    val homeW = row.home.toFloat() / total
+                    if (homeW > 0f) Box(Modifier.weight(homeW.coerceIn(0.02f, 1f)).fillMaxHeight().background(PL.indigo))
+                    if (homeW < 1f) Box(Modifier.weight((1f - homeW).coerceIn(0.02f, 1f)).fillMaxHeight().background(PL.gold.copy(alpha = 0.55f)))
+                }
+            }
+        }
+        Text("Left = home side · right = away side", fontSize = 9.sp, color = PL.muted,
+            modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center)
+    }
+}
+
+/* ─── Match history cards: names, score, result, tap for stats ─── */
+@Composable private fun MatchHistoryCard(match: MatchRecord) {
+    var expanded by rememberSaveable(match.id) { mutableStateOf(false) }
+    val rows = match.stats?.rows
+    DarkCard(padding = 14.dp) {
+        Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).clickable { expanded = !expanded }) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                ResultPill(match.result)
+                Spacer(Modifier.width(10.dp))
+                Column(Modifier.weight(1f)) {
+                    Text("vs ${match.opponentName.ifBlank { "Opponent" }}", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = PL.ink, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(
+                        java.text.SimpleDateFormat("MMM d · HH:mm", java.util.Locale.getDefault()).format(java.util.Date(match.endedAtMs)) +
+                            "  ·  " + if (match.confirmed) "Verified and settled" else (match.settlementNote ?: "Unverified — no coins"),
+                        fontSize = 10.sp,
+                        color = if (match.confirmed) PL.green else PL.gold,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                Text("${match.myGoals} – ${match.opponentGoals}", fontSize = 20.sp, fontWeight = FontWeight.ExtraBold, color = PL.ink)
+                if (match.settledReward.totalCents != 0L) {
+                    Spacer(Modifier.width(10.dp))
+                    Text(
+                        (if (match.settledReward.totalCents > 0) "+" else "") + formatCents(match.settledReward.totalCents),
+                        fontSize = 11.sp, fontWeight = FontWeight.Bold,
+                        color = if (match.settledReward.totalCents > 0) PL.green else PL.red,
+                    )
+                }
+            }
+            AnimatedVisibility(visible = expanded) {
+                if (!rows.isNullOrEmpty()) {
+                    Column { Spacer(Modifier.height(10.dp)); StatsTable(rows) }
+                } else {
+                    Text("No stats captured for this match.", fontSize = 11.sp, color = PL.muted, modifier = Modifier.padding(top = 10.dp))
                 }
             }
         }
@@ -820,11 +953,19 @@ private data class Tool(val key: String, val label: String, val icon: ImageVecto
 }
 
 private fun statLabel(name: String): String = when (name) {
+    "Possession" -> "Possession"
     "TotalShots" -> "Total shots"
     "ShotsOnTarget" -> "Shots on target"
+    "Fouls" -> "Fouls"
+    "Offsides" -> "Offsides"
     "CornerKicks" -> "Corners"
     "FreeKicks" -> "Free kicks"
+    "Passes" -> "Passes"
     "SuccessfulPasses" -> "Successful passes"
+    "Crosses" -> "Crosses"
+    "Interceptions" -> "Interceptions"
+    "Tackles" -> "Tackles"
+    "Saves" -> "Saves"
     else -> name
 }
 
