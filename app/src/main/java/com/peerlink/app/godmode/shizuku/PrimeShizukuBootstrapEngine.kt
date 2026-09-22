@@ -54,10 +54,18 @@ class PrimeShizukuBootstrapEngine(private val context: Context) {
                         "Wireless debugging did not stay enabled (adb_wifi_enabled=0)"
                     )
                 }
-                val port = if (cachedPort in 1..65535) {
-                    cachedPort
-                } else {
-                    discoverTlsPort(discoverTimeoutMs)
+                val candidate = if (cachedPort in 1..65535) cachedPort else 0
+                // Shizuku never trusts a cached port: wireless debugging hands
+                // out a NEW random port after every toggle/reboot, and a stale
+                // port dead-ends the whole activation. Probe the cached port
+                // first; on failure fall through to a fresh mDNS discovery.
+                val port = when {
+                    candidate > 0 && probeTcpPort(candidate) -> candidate
+                    candidate > 0 -> {
+                        AppState.appendLog("[PRIME-ADB] cached port $candidate is dead — re-discovering")
+                        discoverTlsPort(discoverTimeoutMs).takeIf { it in 1..65535 } ?: candidate
+                    }
+                    else -> discoverTlsPort(discoverTimeoutMs)
                 }
                 if (port !in 1..65535) {
                     return@withTimeoutOrNull Result.Failure(
@@ -73,6 +81,18 @@ class PrimeShizukuBootstrapEngine(private val context: Context) {
             AppState.appendLog("[PRIME-ADB] ${error.javaClass.simpleName}: ${error.message}")
             if (engineAlive()) Result.Success(cachedPort)
             else Result.Failure(describeAdbError(error, stage), error)
+        }
+    }
+
+    /** Cheap liveness probe: can we open a TCP socket to this local port right now? */
+    private fun probeTcpPort(port: Int): Boolean {
+        return try {
+            java.net.Socket().use { s ->
+                s.connect(java.net.InetSocketAddress("127.0.0.1", port), 800)
+                true
+            }
+        } catch (_: Exception) {
+            false
         }
     }
 
