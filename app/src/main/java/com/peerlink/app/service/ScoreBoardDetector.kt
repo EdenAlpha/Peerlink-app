@@ -961,7 +961,7 @@ internal object ScoreBoardDetector {
         if (yTop >= H - 4) return null
         val minArea = max(6, (0.000008f * W * H).toInt())
         var comps: List<Box> = componentsOffset(m.loose, m.w, yTop, H, minArea)
-        val hlo = 0.18f * boxH; val hhi = 0.90f * boxH
+        val hlo = 0.18f * boxH; val hhi = 1.10f * boxH
         comps = comps.filter { it.h.toFloat() in hlo..hhi && it.w <= 1.2f * boxW }
         if (comps.size < 8) return null
         val medH = comps.map { it.h.toFloat() }.sorted()[comps.size / 2]
@@ -990,7 +990,7 @@ internal object ScoreBoardDetector {
             val pitches = (0 until parsed.size - 1).map { parsed[it + 1].cy - parsed[it].cy }.filter { it > 0f }
             if (pitches.isEmpty()) break
             val medPitch = pitches.sorted()[pitches.size / 2]
-            if (parsed[parsed.size - 1].cy - parsed[parsed.size - 2].cy <= 1.6f * medPitch) break
+            if (parsed[parsed.size - 1].cy - parsed[parsed.size - 2].cy <= 2.5f * medPitch) break
             parsed.removeAt(parsed.size - 1)
         }
         // row y-lattice -> table index: one unreadable value never shifts rows
