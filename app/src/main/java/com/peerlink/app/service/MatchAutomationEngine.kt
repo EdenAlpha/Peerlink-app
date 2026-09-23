@@ -564,18 +564,22 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
                         "candidate=${candidate?.let { "${it.home}-${it.away}" } ?: "none"} using=${if (captured != null) "new-photo" else if (candidate != null) "toasted-candidate" else "nothing"}"
                 )
                 if (score == null) {
-                    main.post { Toast.makeText(context, "Final score not visible — keep the result visible and retry", Toast.LENGTH_SHORT).show() }
+                    // Never Toast on this path: eFootball is confirmed foreground
+                    // above, so a system Toast is drawn straight onto the screen
+                    // we read. It covered the bottom 3 rows (Interceptions,
+                    // Tackles, Saves) of a captured stats board and cost 3 stat
+                    // rows. The message is preserved in the log; feedback is the
+                    // overlay's haptic, which occludes nothing.
+                    AppState.appendLog("[MATCH-FT  ] Final score not visible — keep the result visible and retry")
+                    MatchMarkerOverlay.rejectFeedback()
                     return@launch
                 }
                 val mode = if (captured != null) "manual" else "manual-candidate"
                 if (!commitDetectedScore(score, mode, generation)) {
-                    main.post {
-                        Toast.makeText(
-                            context,
-                            "Score ${score.home}–${score.away} read but NOT saved — see match log",
-                            Toast.LENGTH_LONG,
-                        ).show()
-                    }
+                    // Same occlusion rule as above: eFootball is foreground, so a
+                    // Toast here would sit on the content the next read needs.
+                    AppState.appendLog("[MATCH-FT  ] Score ${score.home}–${score.away} read but NOT saved — see match log")
+                    MatchMarkerOverlay.conflictFeedback()
                 }
             } finally {
                 manualCaptureBusy.set(false)

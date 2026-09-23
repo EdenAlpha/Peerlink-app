@@ -1008,8 +1008,9 @@ internal object ScoreBoardDetector {
             // reading emits it (see crossValue). This removed the wrong
             // stat rows under night-shift + JPEG q60 while improving recall
             // on vivid/q75 tables.
-            val hv = crossValue(tokenValue(m, p.home), tokenValueLocal(m, p.home, bandX0, bandIsLeft = false))
-            val av = crossValue(tokenValue(m, p.away), tokenValueLocal(m, p.away, bandX1, bandIsLeft = true))
+            val pct = idx == 0          // only the Possession row carries a '%'
+            val hv = crossValue(tokenValue(m, p.home, pct), tokenValueLocal(m, p.home, bandX0, bandIsLeft = false, percentRow = pct))
+            val av = crossValue(tokenValue(m, p.away, pct), tokenValueLocal(m, p.away, bandX1, bandIsLeft = true, percentRow = pct))
             if (hv == null || av == null) continue
             out.add(IndexedRow(idx, hv, av))
         }
@@ -1070,10 +1071,30 @@ internal object ScoreBoardDetector {
         return splitWide(mask, mw, mh, (1.30f * mh).toInt())
     }
 
-    internal fun tokenValue(m: Masks, tok: Pair<Box, ArrayList<Box>>): Int? {
+    internal fun tokenValue(m: Masks, tok: Pair<Box, ArrayList<Box>>, percentRow: Boolean = false): Int? {
         val digits = StringBuilder()
-        for ((piece, pw, ph) in tokenPieces(m, tok.first, tok.second)) {
-            if (pctVeto(piece, pw, ph)) continue
+        val pieces = tokenPieces(m, tok.first, tok.second)
+        for ((pi, tri) in pieces.withIndex()) {
+            val (piece, pw, ph) = tri
+            if (pctVeto(piece, pw, ph)) {
+                // pctVeto's aspect/holes heuristic also deletes REAL digits:
+                // measured over the capture set an '8' at asp .813 / holes 2
+                // reads conf .823 and a '0' at asp .867 reads conf .795 -- both
+                // above the .60 gate -- while every other vetoed piece reads
+                // <= .509. The dropped digit made crossValue see a SHORT global
+                // read (4 vs 84), it refused, and the row came back empty.
+                // Classify first, drop only on refusal. digits.length < 2 keeps
+                // the value inside the <= 2 digit stat range, so a trailing
+                // Possession '%' is still dropped exactly as before.
+                val whole = classifyGlyph(piece, pw, ph)
+                if (whole.digit != null && whole.confidence >= 0.60f &&
+                    whole.margin >= 0.03f && digits.length < 2
+                ) {
+                    digits.append('0' + whole.digit)
+                    continue
+                }
+                continue
+            }
             val rd = classifyGlyph(piece, pw, ph)
             // 0.60 confidence: real stat digits read 0.61..1.0, compression
             // sliver junk reads ~0.51 (measured on the calibration set)
@@ -1082,7 +1103,17 @@ internal object ScoreBoardDetector {
             // turned a refused glyph into a SHORTER number that still looked
             // valid ('38' -> '3') - a silent wrong value. Refusal kills the
             // row; the row lattice keeps every other row at its index.
-            if (rd.digit == null || rd.confidence < 0.60f || rd.margin < 0.03f) return null
+            if (rd.digit == null || rd.confidence < 0.60f || rd.margin < 0.03f) {
+                // Possession is the only percentage row, so its LAST piece is
+                // the '%'. Under JPEG noise that '%' shrinks to a narrow piece
+                // (measured 6x16, asp .375, both circles eroded to 0 holes), so
+                // pctVeto never fires and classify reads conf .32-.54 -- the
+                // refusal dropped the whole row. With two confident digits
+                // already read the value is complete (a stat value is <= 2
+                // digits), so a refusing last piece cannot be part of it.
+                if (percentRow && digits.length >= 2 && pi == pieces.lastIndex) break
+                return null
+            }
             digits.append('0' + rd.digit)
         }
         val s = digits.toString()
@@ -1099,7 +1130,7 @@ internal object ScoreBoardDetector {
      *  the column's alignment side (home values right-align against the
      *  label band, away values left-align), recovering what the global mask
      *  missed. Returns a value or null; the caller cross-validates. */
-    internal fun tokenValueLocal(m: Masks, tok: Pair<Box, ArrayList<Box>>, bandEdge: Int, bandIsLeft: Boolean): Int? {
+    internal fun tokenValueLocal(m: Masks, tok: Pair<Box, ArrayList<Box>>, bandEdge: Int, bandIsLeft: Boolean, percentRow: Boolean = false): Int? {
         val tb = tok.first
         val h = max(1, tb.h)
         val padOut = (0.70f * h).toInt() + 1
@@ -1151,7 +1182,8 @@ internal object ScoreBoardDetector {
         for ((_, _, ph) in pieces) if (ph > hmax) hmax = ph
         if (hmax < STATS_PIECE_FLOOR) return null   // whole table below identity floor
         val digits = StringBuilder()
-        for ((piece, pw, ph) in pieces) {
+        for ((pi, tri) in pieces.withIndex()) {
+            val (piece, pw, ph) = tri
             if (ph < max(4, (0.60f * hmax).toInt())) {
                 continue                     // speck / streak fragment, not a glyph
             }
@@ -1171,9 +1203,27 @@ internal object ScoreBoardDetector {
                 continue
             }
             if (ph < STATS_PIECE_FLOOR) return null   // real glyph below identity floor
-            if (pctVeto(piece, pw, ph)) continue      // '%'
+            if (pctVeto(piece, pw, ph)) {          // '%'
+                // Same defect as the global reader: a vetoed piece can be a
+                // real digit past the aspect/holes heuristic. Keep it only when
+                // it classifies confidently and the value stays <= 2 digits.
+                val whole = classifyGlyph(piece, pw, ph)
+                if (whole.digit != null && whole.confidence >= 0.60f &&
+                    whole.margin >= 0.03f && digits.length < 2
+                ) {
+                    digits.append('0' + whole.digit)
+                    continue
+                }
+                continue
+            }
             val rd = classifyGlyph(piece, pw, ph)
-            if (rd.digit == null || rd.confidence < 0.60f || rd.margin < 0.03f) return null
+            if (rd.digit == null || rd.confidence < 0.60f || rd.margin < 0.03f) {
+                // Same trailing-'%' allowance as the global reader, scoped to
+                // the Possession row: two confident digits already read means
+                // the value is complete, so the refusing last piece is the '%'.
+                if (percentRow && digits.length >= 2 && pi == pieces.lastIndex) break
+                return null
+            }
             digits.append('0' + rd.digit)
         }
         val s = digits.toString()
