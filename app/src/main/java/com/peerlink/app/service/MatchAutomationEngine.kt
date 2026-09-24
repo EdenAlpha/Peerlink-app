@@ -89,6 +89,12 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
      *  must outlive the menu or the auto-commit never sees the board. */
     private const val PATH_A_TAIL_MS = 20_000L
 
+    /** Field capture 2026-09-22: a pause menu collapses the armed feed to
+     *  0pps for ~56s and then resumes; real full time never resumes. The
+     *  sustained haptic fallback must outlast the longest observed pause
+     *  yet fire while the stats board is still on screen. */
+    private const val SUSTAINED_ZERO_PPS_MS = 90_000L
+
     /** A real goodbye burst sends 20+ len-54 packets per 1 Hz poll (45 in
      *  ~1.1s in field traces); a stray mid-game 54B shows up as 1-2. Below
      *  this the packet is noted but must not open a capture burst. */
@@ -158,6 +164,12 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
     private var pathBTriggerSinceMs = 0L
     private var pathBCooldownUntilMs = 0L
 
+    /** 0pps episode of the armed game feed (pause vs full time not yet told
+     *  apart at the packet layer; see SUSTAINED_ZERO_PPS_MS). */
+    private var zeroPpsSinceMs = 0L
+    private var zeroPpsTailFired = false
+    private var sustainedZeroBuzzed = false
+
     private var lowFlowSinceMs = 0L
     private var disconnectResolved = false
 
@@ -201,7 +213,8 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
         var startProducer = false
         var logT0: String? = null
         var logCapture: String? = null
-        var vibrateCliff = false
+        var noteCliff = false
+        var sustainedZeroBuzz = false
 
         synchronized(lock) {
             val previous = lastStats
@@ -281,6 +294,25 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
                 return@synchronized
             }
 
+            // Track the 0pps episode of the armed feed. Pause menus and full
+            // time look identical at the packet layer (both collapse ~27->0),
+            // so nothing buzzes here: the verified score commit buzzes from
+            // commitDetectedScore() (stats on screen), and a collapse that
+            // never resumes gets the sustained fallback below.
+            if (signal <= ZERO_PPS_THRESHOLD) {
+                if (zeroPpsSinceMs == 0L) {
+                    zeroPpsSinceMs = now
+                } else if (now - zeroPpsSinceMs >= SUSTAINED_ZERO_PPS_MS && !sustainedZeroBuzzed) {
+                    sustainedZeroBuzzed = true
+                    sustainedZeroBuzz = true
+                    logCapture = "[MATCH-CAP ] 0pps sustained ${SUSTAINED_ZERO_PPS_MS / 1000}s (no resume, no score) -> haptic marker"
+                }
+            } else {
+                zeroPpsSinceMs = 0L
+                zeroPpsTailFired = false
+                sustainedZeroBuzzed = false
+            }
+
             val mode = captureMode
             when (mode) {
                 null -> {
@@ -297,6 +329,17 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
                         } else {
                             logCapture = "[MATCH-CAP ] lone 54B ($smallDelta) ignored — not a goodbye burst"
                         }
+                    } else if (signal <= ZERO_PPS_THRESHOLD && zeroPpsSinceMs != 0L &&
+                        now - zeroPpsSinceMs >= ZERO_PPS_CONFIRM_MS && !zeroPpsTailFired
+                    ) {
+                        // Field data (2026-09-22): real full time never sends the
+                        // 54B goodbye burst — the feed itself is the end signal.
+                        // Open the tail burst so the stats board gets captured.
+                        zeroPpsTailFired = true
+                        noteCliff = true
+                        enterModeLocked(CaptureMode.PATH_A_TAIL, now)
+                        logCapture = "[MATCH-CAP ] 0pps collapse without 54B -> tail capture <= ${PATH_A_TAIL_MS / 1000}s"
+                        startProducer = true
                     } else if (!smallPacketSeenThisMatch && signal in 1 until PATH_B_TRIGGER_PPS && now >= pathBCooldownUntilMs) {
                         if (pathBTriggerSinceMs == 0L) {
                             pathBTriggerSinceMs = now
@@ -323,9 +366,11 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
                     // decisions live here (1Hz); the producer only follows
                     // the current mode.
                     if (signal <= ZERO_PPS_THRESHOLD) {
+                        // Marker only — no buzz here: pause menus produce the
+                        // same cliff (field: buzzed 11m before real FT).
+                        noteCliff = true
                         enterModeLocked(CaptureMode.PATH_A_TAIL, now)
                         logCapture = "[MATCH-CAP ] Path A cliff confirmed (pps=$signal) -> tail capture <= ${PATH_A_TAIL_MS / 1000}s"
-                        vibrateCliff = true
                     } else if (now - modeStartedAtMs >= ZERO_PPS_CONFIRM_MS) {
                         enterModeLocked(CaptureMode.PATH_A_PAUSE, now)
                         logCapture = "[MATCH-CAP ] No 0pps within ${ZERO_PPS_CONFIRM_MS / 1000}s -> capture paused ${PAUSE_WINDOW_MS / 1000}s watching for the cliff"
@@ -346,9 +391,9 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
                 CaptureMode.PATH_A_PAUSE -> {
                     // Capture producer paused; watching for a delayed cliff.
                     if (signal <= ZERO_PPS_THRESHOLD) {
+                        noteCliff = true
                         enterModeLocked(CaptureMode.PATH_A_TAIL, now)
                         logCapture = "[MATCH-CAP ] Delayed cliff reached 0pps -> capture resumed, tail <= ${PATH_A_TAIL_MS / 1000}s"
-                        vibrateCliff = true
                     } else if (now - modeStartedAtMs >= PAUSE_WINDOW_MS) {
                         endModeLocked()
                         logCapture = "[MATCH-CAP ] No 0pps within pause window -> 54B was noise; capture ended"
@@ -374,12 +419,11 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
             AppState.appendLog(it)
             PassthroughRecorder.note("T0 pps=$currentPps")
         }
-        logCapture?.let {
-            AppState.appendLog(it)
-            if (vibrateCliff) {
-                PassthroughRecorder.note("0pps_cliff")
-                vibrateCliffMarker()
-            }
+        if (noteCliff) PassthroughRecorder.note("0pps_cliff")
+        logCapture?.let { AppState.appendLog(it) }
+        if (sustainedZeroBuzz) {
+            PassthroughRecorder.note("0pps_sustained")
+            vibrateFullTimeMarker("after ${SUSTAINED_ZERO_PPS_MS / 1000}s at 0pps")
         }
         if (startProducer) startProducerIfIdle()
         if (startSidePrompt) MatchMarkerOverlay.beginSideSelection()
@@ -389,11 +433,13 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
     }
 
     /**
-     * Haptic marker for the 0pps cliff so the user can correlate the exact
-     * on-screen moment with the capture timeline (does the score/stats stay
-     * visible at 0pps?). Double-buzz, distinct from other feedback.
+     * Double-buzz haptic marker for the capture timeline. Fires only on
+     * evidence that outlives a pause menu: a verified full-time score commit
+     * (stats board confirmed on screen) or a 0pps collapse sustained past any
+     * observed pause (56s in field data). The raw cliff itself must not buzz —
+     * a pause menu produced an identical cliff 11 minutes before real FT.
      */
-    private fun vibrateCliffMarker() {
+    private fun vibrateFullTimeMarker(reason: String) {
         val context = appContext ?: return
         val effect = longArrayOf(0, 70, 110, 70)
         val done = runCatching {
@@ -407,7 +453,7 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
                     ?.vibrate(android.os.VibrationEffect.createWaveform(effect, -1))
             }
         }.isSuccess
-        if (done) AppState.appendLog("[MATCH-CAP ] 0pps cliff marker (vibrated)")
+        if (done) AppState.appendLog("[MATCH-CAP ] haptic marker $reason (vibrated)")
     }
 
     /** Must be called outside [lock] after a mode was entered. */
@@ -804,6 +850,7 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
         }
         AppState.appendLog("[MATCH-OCR ] Confirmed HOME ${score.home}-${score.away} AWAY ($mode)")
         PassthroughRecorder.note("score_commit ${score.home}-${score.away} mode=$mode")
+        vibrateFullTimeMarker("at verified full time ${score.home}-${score.away} (stats on screen)")
         return true
     }
 
@@ -871,6 +918,9 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
         autoCandidateHits = 0
         pathBTriggerSinceMs = 0L
         pathBCooldownUntilMs = 0L
+        zeroPpsSinceMs = 0L
+        zeroPpsTailFired = false
+        sustainedZeroBuzzed = false
         lowFlowSinceMs = 0L
         disconnectResolved = false
         scoreConfirmed = false
@@ -894,6 +944,9 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
             autoCandidateHits = 0
             lastSmallGamePackets = lastStats?.smallGamePackets ?: lastSmallGamePackets
             smallPacketSeenThisMatch = false
+            zeroPpsSinceMs = 0L
+            zeroPpsTailFired = false
+            sustainedZeroBuzzed = false
             lowFlowSinceMs = 0L
             disconnectResolved = false
             rematchNormalSinceMs = 0L
