@@ -102,6 +102,7 @@ import com.peerlink.app.core.AppState
 import com.peerlink.app.discovery.NsdDiscovery
 import com.peerlink.app.godmode.GodModeManager
 import com.peerlink.app.service.PeerLinkVpnService
+import com.peerlink.app.tunnel.PassthroughRecorder
 import com.peerlink.app.service.CallMonitorService
 import androidx.compose.ui.unit.Dp
 import android.content.ContentValues
@@ -370,6 +371,7 @@ class MainActivity : AppCompatActivity(), NsdDiscovery.NsdCallback {
                                 }
                                 val udpTrace = runCatching { PeerLinkVpnService.dumpNativeUdpTrace() }
                                     .getOrDefault("")
+                                val passCap = runCatching { PassthroughRecorder.snapshotForExport() }.getOrNull()
                                 val shots = com.peerlink.app.service.ScoreCaptureDump.exportedFiles()
 
                                 // Bundle EVERYTHING into a single zip file.
@@ -377,6 +379,9 @@ class MainActivity : AppCompatActivity(), NsdDiscovery.NsdCallback {
                                 entries.add(ZipEntryData(name = "match_log.txt", text = fullLog))
                                 if (udpTrace.isNotBlank()) {
                                     entries.add(ZipEntryData(name = "udp_trace.csv", text = udpTrace))
+                                }
+                                if (passCap != null) {
+                                    entries.add(ZipEntryData(name = "passthrough_capture.csv", file = passCap))
                                 }
                                 for (shot in shots) {
                                     entries.add(ZipEntryData(name = "score_shots/${shot.name}", file = shot))
@@ -395,6 +400,9 @@ class MainActivity : AppCompatActivity(), NsdDiscovery.NsdCallback {
                                             appendLine("- match_log.txt : full session log")
                                             if (udpTrace.isNotBlank()) {
                                                 appendLine("- udp_trace.csv : UDP timing trace")
+                                            }
+                                            if (passCap != null) {
+                                                appendLine("- passthrough_capture.csv : full-byte internet-side (non-game) traffic with event markers")
                                             }
                                             if (shots.isNotEmpty()) {
                                                 appendLine("- score_shots/  : ${shots.size} score capture shot(s)")
@@ -418,6 +426,7 @@ class MainActivity : AppCompatActivity(), NsdDiscovery.NsdCallback {
                                     "[EXPORT ] Single-file export $fileName ok=$ok; " +
                                         "log chars=${fullLog.length}; " +
                                         "UDP timing trace chars=${udpTrace.length} rawBytes=off; " +
+                                        "passthrough=${passCap?.name ?: "none"} (${com.peerlink.app.tunnel.PassthroughRecorder.statsLine()}); " +
                                         "score shots ${shots.size}"
                                 )
                             }, "PeerLink-Log-Export").apply {

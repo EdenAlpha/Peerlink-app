@@ -1101,6 +1101,7 @@ class TunnelEngine(
         JitterDiag.resetInterval()
         JitterDiag.tunnelActive.set(false)
         JitterDiag.totalGcEvents.set(0)
+        PassthroughRecorder.init(context)
         seenStunServers.clear()
         seenTunnelDestinations.clear()
         seenGamePorts.clear()
@@ -1409,6 +1410,7 @@ fun exactWifiUdpNetwork(): android.net.Network? {
 
     fun stop() {
         isRunning.set(false)
+        PassthroughRecorder.stop()
 
         // âš¡ Stop async tunnel send thread
         tunnelSendThread?.interrupt()
@@ -2035,6 +2037,7 @@ fun exactWifiUdpNetwork(): android.net.Network? {
     }
 
     private fun handlePassthrough(buffer: ByteArray, length: Int, parsed: PacketParser.ParsedPacket) {
+        PassthroughRecorder.recordTx(buffer, length)
         if (parsed.protocol == PacketParser.PROTOCOL_UDP) {
             val qp = udpTcpPacketPool.acquire()
             qp.copyFrom(buffer, length, parsed)
@@ -2524,6 +2527,7 @@ fun exactWifiUdpNetwork(): android.net.Network? {
                         if (ref.dstPort == 53) { handleIncomingDnsResponse(payload) }
                         
                         val pkt = buildIpv6UdpPacket(ref.dstAddr, ref.srcAddr, ref.dstPort, ref.srcPort, payload)
+                        PassthroughRecorder.recordRx(pkt, pkt.size)
                         offerToDevice(pkt, pkt.size, "IPv6-UDP-PASS")
                     }
                 }
@@ -2877,6 +2881,7 @@ fun exactWifiUdpNetwork(): android.net.Network? {
                         if (ref.srcPort == 53) { handleIncomingDnsResponse(payload) }
                         
                         val pkt = buildUdpIpPacket(ref.srcIp, ref.dstIp, ref.srcPort, ref.dstPort, payload, len)
+                        PassthroughRecorder.recordRx(pkt, pkt.size)
                         offerToDevice(pkt, pkt.size, "UDP-PASS")
                     }
                 }

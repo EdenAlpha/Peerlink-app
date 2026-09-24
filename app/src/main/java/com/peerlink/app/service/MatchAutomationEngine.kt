@@ -11,6 +11,7 @@ import com.peerlink.app.core.MatchPhase
 import com.peerlink.app.core.MatchTracker
 import com.peerlink.app.godmode.PrimeClient
 import com.peerlink.app.tunnel.NativeBackendStats
+import com.peerlink.app.tunnel.PassthroughRecorder
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
@@ -200,6 +201,7 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
         var startProducer = false
         var logT0: String? = null
         var logCapture: String? = null
+        var vibrateCliff = false
 
         synchronized(lock) {
             val previous = lastStats
@@ -323,6 +325,7 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
                     if (signal <= ZERO_PPS_THRESHOLD) {
                         enterModeLocked(CaptureMode.PATH_A_TAIL, now)
                         logCapture = "[MATCH-CAP ] Path A cliff confirmed (pps=$signal) -> tail capture <= ${PATH_A_TAIL_MS / 1000}s"
+                        vibrateCliff = true
                     } else if (now - modeStartedAtMs >= ZERO_PPS_CONFIRM_MS) {
                         enterModeLocked(CaptureMode.PATH_A_PAUSE, now)
                         logCapture = "[MATCH-CAP ] No 0pps within ${ZERO_PPS_CONFIRM_MS / 1000}s -> capture paused ${PAUSE_WINDOW_MS / 1000}s watching for the cliff"
@@ -345,6 +348,7 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
                     if (signal <= ZERO_PPS_THRESHOLD) {
                         enterModeLocked(CaptureMode.PATH_A_TAIL, now)
                         logCapture = "[MATCH-CAP ] Delayed cliff reached 0pps -> capture resumed, tail <= ${PATH_A_TAIL_MS / 1000}s"
+                        vibrateCliff = true
                     } else if (now - modeStartedAtMs >= PAUSE_WINDOW_MS) {
                         endModeLocked()
                         logCapture = "[MATCH-CAP ] No 0pps within pause window -> 54B was noise; capture ended"
@@ -366,13 +370,44 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
             }
         }
 
-        logT0?.let(AppState::appendLog)
-        logCapture?.let(AppState::appendLog)
+        logT0?.let {
+            AppState.appendLog(it)
+            PassthroughRecorder.note("T0 pps=$currentPps")
+        }
+        logCapture?.let {
+            AppState.appendLog(it)
+            if (vibrateCliff) {
+                PassthroughRecorder.note("0pps_cliff")
+                vibrateCliffMarker()
+            }
+        }
         if (startProducer) startProducerIfIdle()
         if (startSidePrompt) MatchMarkerOverlay.beginSideSelection()
         if (detectTopology) scope.launch { detectAndAdvertiseTopology() }
         if (resolveDisconnect) scope.launch { resolveSustainedDisconnect() }
         if (resetRematch) resetForRematch()
+    }
+
+    /**
+     * Haptic marker for the 0pps cliff so the user can correlate the exact
+     * on-screen moment with the capture timeline (does the score/stats stay
+     * visible at 0pps?). Double-buzz, distinct from other feedback.
+     */
+    private fun vibrateCliffMarker() {
+        val context = appContext ?: return
+        val effect = longArrayOf(0, 70, 110, 70)
+        val done = runCatching {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                val manager = context.getSystemService(android.content.Context.VIBRATOR_MANAGER_SERVICE)
+                    as? android.os.VibratorManager
+                manager?.defaultVibrator?.vibrate(android.os.VibrationEffect.createWaveform(effect, -1))
+            } else {
+                @Suppress("DEPRECATION")
+                (context.getSystemService(android.content.Context.VIBRATOR_SERVICE) as? android.os.Vibrator)
+                    ?.vibrate(android.os.VibrationEffect.createWaveform(effect, -1))
+            }
+        }.isSuccess
+        if (done) AppState.appendLog("[MATCH-CAP ] 0pps cliff marker (vibrated)")
     }
 
     /** Must be called outside [lock] after a mode was entered. */
@@ -768,6 +803,7 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
             MatchMarkerOverlay.setWaiting()
         }
         AppState.appendLog("[MATCH-OCR ] Confirmed HOME ${score.home}-${score.away} AWAY ($mode)")
+        PassthroughRecorder.note("score_commit ${score.home}-${score.away} mode=$mode")
         return true
     }
 
@@ -872,6 +908,7 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
         // sealed. Without this call the rematch's scores — auto and FT-tap
         // alike — fail silently for the whole match.
         MatchTracker.markGameplayStarted()
+        PassthroughRecorder.note("rematch_ha_reset")
         AppState.appendLog("[MATCH-AUTO] New sustained 24-27pps flow after result -> rematch T0 and H/A reset")
     }
 
