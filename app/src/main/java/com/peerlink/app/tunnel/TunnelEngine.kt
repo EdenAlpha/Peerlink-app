@@ -561,6 +561,7 @@ class TunnelEngine(
         val stunServersLearned = AtomicLong(0)
         val strategicBlockedRelay = AtomicLong(0)
         val strategicBlockedBypass = AtomicLong(0)
+        val strategicBlockedTurnRelay = AtomicLong(0)
         val lastStatsDump = AtomicLong(System.currentTimeMillis())
         
         fun reset() {
@@ -572,7 +573,7 @@ class TunnelEngine(
             ipv6TunnelOut.set(0); ipv6TunnelIn.set(0); ipv6Injected.set(0)
             portCorrected.set(0); portChanges.set(0); injectionErrors.set(0)
             dnsQueriesWatched.set(0); dnsResponsesProcessed.set(0); stunServersLearned.set(0)
-            strategicBlockedRelay.set(0); strategicBlockedBypass.set(0)
+            strategicBlockedRelay.set(0); strategicBlockedBypass.set(0); strategicBlockedTurnRelay.set(0)
             lastStatsDump.set(System.currentTimeMillis())
         }
     }
@@ -649,6 +650,24 @@ class TunnelEngine(
     private val tunnelAliveWindowMs = 30_000L
     @Volatile private var lastTunnelActivityMs = 0L
 
+    // ---- TURN relay blocking by hostname (block by URL, not by port) ----
+    // turn.konami.com is a constant name (the DTLS heartbeat destination) even though its
+    // IPs rotate, so the IPs are learned two ways: by resolving the name ourselves while
+    // the engine runs, and by sniffing the game's own DNS answers (the same learner that
+    // already watches pesam.stun.service.konami.net). Gameplay-speed flows to those IPs
+    // are relay regardless of port or framing; the ~2.1s heartbeat shares the address but
+    // never the rate, so it always passes.
+    private val turnRelayHostNames = listOf("turn.konami.com")
+    private val learnedTurnRelayIps: MutableSet<String> = ConcurrentHashMap.newKeySet()
+    private val turnRelayFlowRates = ConcurrentHashMap<String, TurnRelayFlowRate>()
+    private val turnRelayRateWindowMs = 3000L
+    private val turnRelayRateHotPackets = 10
+
+    private class TurnRelayFlowRate {
+        var windowStartMs = 0L
+        var count = 0
+    }
+
     private data class TunnelDiagMeta(
         val senderId: Int,
         val flowHash: Int,
@@ -702,7 +721,31 @@ class TunnelEngine(
     }
 
     /**
+     * True once a flow to/from a learned TURN address carries enough packets to be
+     * gameplay rather than the ~0.5pps DTLS heartbeat (>=10 packets within 3s). TX and RX
+     * share one window per address:port so the bidirectional total counts, and the window
+     * decays the moment gameplay stops, letting the heartbeat through again.
+     */
+    private fun turnRelayFlowIsHot(flowKey: String, nowMs: Long): Boolean {
+        if (turnRelayFlowRates.size > 512) turnRelayFlowRates.clear()
+        val rate = turnRelayFlowRates.getOrPut(flowKey) { TurnRelayFlowRate() }
+        synchronized(rate) {
+            if (nowMs - rate.windowStartMs >= turnRelayRateWindowMs) {
+                rate.windowStartMs = nowMs
+                rate.count = 0
+            }
+            rate.count++
+            return rate.count >= turnRelayRateHotPackets
+        }
+    }
+
+    /**
      * Strategic block rules for OUTBOUND passthrough UDP (paired sessions only):
+     *  - "turn-relay": traffic aimed at an IP learned for Konami's constant TURN/relay
+     *    hostname (turn.konami.com) at gameplay speed. Catches relay by NAME+RATE on any
+     *    port and any framing - including DTLS-wrapped relay - while the slow heartbeat
+     *    never gets hot. Evidence: PEERLINK_CHANGES relay section ("independent DTLS
+     *    sessions to Konami turn.konami.com infrastructure").
      *  - "relay": traffic aimed at a PUBLIC address on the known Konami relay port.
      *    Evidence: the only confirmed relay capture (06_Jan) carried 44,140 gameplay
      *    packets to 34.155.120.34:5735 at 43 pps; no direct-P2P capture ever used 5735.
@@ -710,13 +753,19 @@ class TunnelEngine(
      *    fabricated-IP tunnel is demonstrably alive. Evidence: the m3 session where
      *    17,114 gameplay packets went direct to the peer's real address (134 replies)
      *    instead of using the working tunnel.
-     * Both rules are no-ops in healthy sessions (nothing classifies that way).
+     * Each rule is a no-op in healthy sessions (nothing classifies that way).
      */
     private fun strategicBlockReason(parsed: PacketParser.ParsedPacket, buffer: ByteArray): String? {
         if (!strategicBlockEnabled) return null
         if (parsed.protocol != PacketParser.PROTOCOL_UDP) return null
         if (!AppState.isPaired.get()) return null
-        // Never touch DTLS: the ~2.1s heartbeat to turn.konami.com must keep flowing.
+        // TURN relay by hostname-learned IP, evaluated BEFORE the DTLS exemption because
+        // relayed gameplay may also be DTLS: the heartbeat is spared by RATE, not framing.
+        // Ports 53/443 stay exempt as belt-and-braces (DNS/QUIC can never be gameplay).
+        if (parsed.destPort != 53 && parsed.destPort != 443 && learnedTurnRelayIps.contains(parsed.destIp)) {
+            return if (turnRelayFlowIsHot("${parsed.destIp}:${parsed.destPort}", System.currentTimeMillis())) "turn-relay" else null
+        }
+        // Never touch DTLS elsewhere: the ~2.1s heartbeat to turn.konami.com must keep flowing.
         if (isDtlsRecord(buffer, parsed.udpPayloadOffset, parsed.udpPayloadLength)) return null
         if (parsed.destPort == strategicRelayPort && !PacketParser.isPrivateIpBytes(parsed.destIpBytes)) {
             return "relay"
@@ -729,14 +778,23 @@ class TunnelEngine(
     }
 
     /**
-     * Inbound twin of [strategicBlockReason]: passthrough replies coming back from the
-     * relay port or from the peer's real gameplay port. Tunneled traffic never passes
-     * through this path (it is injected by [injectInnerUdpToDevice]), so the rule can
-     * not touch the fabricated-IP stream.
+     * Inbound twin of [strategicBlockReason]: passthrough replies coming back from a
+     * learned TURN address, from the relay port, or from the peer's real gameplay port.
+     * Tunneled traffic never passes through this path (it is injected by
+     * [injectInnerUdpToDevice]), so the rule can not touch the fabricated-IP stream.
      */
     private fun strategicBlockReasonRx(srcIpBytes: ByteArray, srcPort: Int, payload: ByteArray): String? {
         if (!strategicBlockEnabled) return null
         if (!AppState.isPaired.get()) return null
+        // Same TURN rule inbound: shares the TX rate window for the same ip:port, so a
+        // bidirectional relayed stream counts once; the heartbeat stays far below the
+        // threshold in either direction.
+        if (srcPort != 53 && srcPort != 443) {
+            val srcIp = formatIpv4Bytes(srcIpBytes)
+            if (learnedTurnRelayIps.contains(srcIp)) {
+                return if (turnRelayFlowIsHot("$srcIp:$srcPort", System.currentTimeMillis())) "turn-relay" else null
+            }
+        }
         if (isDtlsRecord(payload, 0, payload.size)) return null
         if (srcPort == strategicRelayPort && !PacketParser.isPrivateIpBytes(srcIpBytes)) return "relay"
         val remotePort = stableGameplayRemotePort ?: return null
@@ -812,6 +870,7 @@ class TunnelEngine(
                 parsed.protocol != PacketParser.PROTOCOL_UDP -> "non-udp-to-fabricated-peer"
                 parsed.destPort == strategicRelayPort -> "strategic-relay-block"
                 stableGameplayRemotePort != null && parsed.destPort == stableGameplayRemotePort -> "strategic-bypass-block"
+                learnedTurnRelayIps.contains(parsed.destIp) -> "strategic-turn-relay-block"
                 else -> "drop"
             }
         }
@@ -1036,7 +1095,7 @@ class TunnelEngine(
             debugLog("ðŸ“Š DNS", "Watched=${DebugStats.dnsQueriesWatched.get()} | Responses=${DebugStats.dnsResponsesProcessed.get()} | ServersLearned=${DebugStats.stunServersLearned.get()}")
             debugLog("ðŸ“Š DNS-LEARNED", "IPv4=${PacketParser.learnedStunServerIps.joinToString(",")} | IPv6=${PacketParser.learnedStunServerIpv6s.size} entries")
             debugLog("ðŸ“Š STUN", "IPv4=${DebugStats.stunIntercepted.get()} | IPv6=${DebugStats.ipv6StunIntercepted.get()} | Responses=${DebugStats.stunResponsesSent.get()}")
-            debugLog("STRATEGIC", "RelayBlocked=${DebugStats.strategicBlockedRelay.get()} | BypassBlocked=${DebugStats.strategicBlockedBypass.get()} | Enabled=$strategicBlockEnabled | RemoteGamePort=${stableGameplayRemotePort ?: "NONE"} | TunnelAgeMs=${if (lastTunnelActivityMs > 0L) now - lastTunnelActivityMs else -1L}")
+            debugLog("STRATEGIC", "RelayBlocked=${DebugStats.strategicBlockedRelay.get()} | BypassBlocked=${DebugStats.strategicBlockedBypass.get()} | TurnRelayBlocked=${DebugStats.strategicBlockedTurnRelay.get()} | TurnIps=${learnedTurnRelayIps.size} | Enabled=$strategicBlockEnabled | RemoteGamePort=${stableGameplayRemotePort ?: "NONE"} | TunnelAgeMs=${if (lastTunnelActivityMs > 0L) now - lastTunnelActivityMs else -1L}")
             debugLog("ðŸ“Š TUNNEL-OUT", "Total=${DebugStats.tunnelOutPackets.get()} pkts (${DebugStats.tunnelOutBytes.get()}b) | IPv6=${DebugStats.ipv6TunnelOut.get()}")
             debugLog("ðŸ“Š TUNNEL-IN", "Total=${DebugStats.tunnelInPackets.get()} pkts (${DebugStats.tunnelInBytes.get()}b) | IPv6=${DebugStats.ipv6TunnelIn.get()}")
             debugLog("ðŸ“Š INJECT", "IPv6=${DebugStats.ipv6Injected.get()} | PortCorrected=${DebugStats.portCorrected.get()} | Errors=${DebugStats.injectionErrors.get()}")
@@ -1196,6 +1255,9 @@ class TunnelEngine(
         seenGamePorts.clear()
         pendingStunDnsQueries.clear()
         PacketParser.clearLearnedStunServers()
+        learnedTurnRelayIps.clear()
+        turnRelayFlowRates.clear()
+        startTurnRelayIpResolver()
         
         detectedGameIp = null
         detectedGameIpBytes = null
@@ -1559,6 +1621,8 @@ fun exactWifiUdpNetwork(): android.net.Network? {
         
         pendingStunDnsQueries.clear()
         PacketParser.clearLearnedStunServers()
+        learnedTurnRelayIps.clear()
+        turnRelayFlowRates.clear()
         
         networkToDeviceQueue.clear()
         deviceToNetworkUdpQueue.clear()
@@ -1771,6 +1835,57 @@ fun exactWifiUdpNetwork(): android.net.Network? {
         val lower = domain.lowercase()
         return STUN_DOMAIN_KEYWORDS.any { lower.contains(it) }
     }
+
+    private fun isTurnRelayDomain(domain: String): Boolean {
+        val lower = domain.lowercase()
+        return turnRelayHostNames.any { lower == it || lower.endsWith(".$it") }
+    }
+
+    /**
+     * Resolve Konami's constant TURN/relay hostname on a background thread: the name is
+     * fixed even when its IPs rotate, and learning them must not depend on the game
+     * re-querying DNS (its answers may be cached from before the VPN came up).
+     * Refreshes every 10 min while healthy, retries in ~15s while failing.
+     */
+    private fun startTurnRelayIpResolver() {
+        Thread({
+            var wasOk = true
+            while (isRunning.get()) {
+                val ok = resolveTurnRelayIpsOnce()
+                if (ok != wasOk) {
+                    wasOk = ok
+                    debugLog("TURN-IP", if (ok) "hostname lookup restored (${learnedTurnRelayIps.size} IPs known)" else "hostname lookup failed - will retry")
+                }
+                val intervalMs = if (ok) 600_000L else 15_000L
+                var slept = 0L
+                while (slept < intervalMs && isRunning.get()) {
+                    try { Thread.sleep(10_000L) } catch (_: InterruptedException) { break }
+                    slept += 10_000L
+                }
+            }
+        }, "PeerLink-TurnRelayResolve").apply {
+            isDaemon = true
+            start()
+        }
+    }
+
+    private fun resolveTurnRelayIpsOnce(): Boolean {
+        var allOk = true
+        for (host in turnRelayHostNames) {
+            try {
+                for (addr in InetAddress.getAllByName(host)) {
+                    if (addr !is Inet4Address) continue
+                    val ip = addr.hostAddress ?: continue
+                    if (learnedTurnRelayIps.add(ip)) {
+                        debugLog("TURN-IP LEARNED", "$ip (self-resolve of $host)")
+                    }
+                }
+            } catch (e: Exception) {
+                allOk = false
+            }
+        }
+        return allOk
+    }
     
     private fun handleOutgoingDnsQuery(data: ByteArray, payloadOffset: Int, payloadLength: Int) {
         if (payloadLength < 12) return
@@ -1785,7 +1900,7 @@ fun exactWifiUdpNetwork(): android.net.Network? {
             val transactionId = ((data[payloadOffset].toInt() and 0xFF) shl 8) or (data[payloadOffset + 1].toInt() and 0xFF)
             val domain = parseDnsDomainName(data, payloadOffset, payloadOffset + 12)
             
-            if (isStunDomain(domain)) {
+            if (isStunDomain(domain) || isTurnRelayDomain(domain)) {
                 pendingStunDnsQueries[transactionId] = domain
                 DebugStats.dnsQueriesWatched.incrementAndGet()
                 debugLog("ðŸ” DNS-QUERY", "Watching STUN DNS: '$domain' (txn=0x${transactionId.toString(16)})")
@@ -1807,6 +1922,17 @@ fun exactWifiUdpNetwork(): android.net.Network? {
             debugLog("ðŸ“¥ DNS-RESPONSE", "Processing response for '$domain' (txn=0x${transactionId.toString(16)})")
             
             val (ipv4List, ipv6List) = extractIpsFromDnsResponse(payload)
+            
+            if (isTurnRelayDomain(domain)) {
+                // TURN/relay addresses: learned for blocking, NOT as STUN servers - the
+                // STUN set drives interception and must never swallow the heartbeat.
+                ipv4List.forEach { ip ->
+                    if (learnedTurnRelayIps.add(ip)) {
+                        debugLog("TURN-IP LEARNED", "$ip (from DNS answer for '$domain')")
+                    }
+                }
+                return
+            }
             
             ipv4List.forEach { ip ->
                 if (PacketParser.learnedStunServerIps.add(ip)) {
@@ -2063,7 +2189,11 @@ fun exactWifiUdpNetwork(): android.net.Network? {
             PassthroughRecorder.recordTx(buffer, length)
             noteStrategicBlock(
                 strategicReason,
-                if (strategicReason == "relay") DebugStats.strategicBlockedRelay else DebugStats.strategicBlockedBypass,
+                when (strategicReason) {
+                    "relay" -> DebugStats.strategicBlockedRelay
+                    "turn-relay" -> DebugStats.strategicBlockedTurnRelay
+                    else -> DebugStats.strategicBlockedBypass
+                },
                 "tx ${parsed.sourceIp}:${parsed.sourcePort} -> ${parsed.destIp}:${parsed.destPort} len=$length"
             )
         }
@@ -2444,7 +2574,7 @@ fun exactWifiUdpNetwork(): android.net.Network? {
             val transactionId = ((buffer[udpPayloadOffset].toInt() and 0xFF) shl 8) or (buffer[udpPayloadOffset + 1].toInt() and 0xFF)
             val domain = parseDnsDomainName(buffer, udpPayloadOffset, udpPayloadOffset + 12)
             
-            if (isStunDomain(domain)) {
+            if (isStunDomain(domain) || isTurnRelayDomain(domain)) {
                 pendingStunDnsQueries[transactionId] = domain
                 DebugStats.dnsQueriesWatched.incrementAndGet()
                 debugLog("ðŸ” DNS-QUERY-IPv6", "Watching STUN DNS: '$domain' (txn=0x${transactionId.toString(16)})")
@@ -2999,7 +3129,11 @@ fun exactWifiUdpNetwork(): android.net.Network? {
                             // path that must not replace the fabricated-IP tunnel.
                             noteStrategicBlock(
                                 rxReason,
-                                if (rxReason == "relay") DebugStats.strategicBlockedRelay else DebugStats.strategicBlockedBypass,
+                                when (rxReason) {
+                                    "relay" -> DebugStats.strategicBlockedRelay
+                                    "turn-relay" -> DebugStats.strategicBlockedTurnRelay
+                                    else -> DebugStats.strategicBlockedBypass
+                                },
                                 "rx ${formatIpv4Bytes(ref.srcIp)}:${ref.srcPort} -> ${formatIpv4Bytes(ref.dstIp)}:${ref.dstPort} len=$len"
                             )
                         } else {

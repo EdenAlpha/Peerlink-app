@@ -100,7 +100,7 @@ modes, both of which bypass the fabricated-IP tunnel:
 
 ## Fix (TunnelEngine)
 
-Two block rules, active only while paired:
+Three block rules, active only while paired:
 
 - **relay**: passthrough UDP with remote port 5735 to a public address is
   dropped in both directions.
@@ -110,21 +110,41 @@ Two block rules, active only while paired:
   directions, but only while a tunneled packet was seen within the last 30 s.
   If the tunnel dies for real, the rule disarms itself after 30 s and ordinary
   passthrough resumes.
+- **turn-relay**: passthrough UDP to/from an IP learned for Konami's *constant*
+  TURN/relay hostname (`turn.konami.com`) at gameplay speed — ≥10 packets
+  within 3 s per address:port, either direction sharing one window. The name is
+  fixed even when its IPs rotate, and the IPs are learned two independent ways:
+  by resolving the name on a background thread while the engine runs (does not
+  depend on the game re-querying DNS), and by sniffing the game's own DNS
+  answers (same learner that already watches `pesam.stun.service.konami.net`,
+  now extended to watch turn domains in both the IPv4 and IPv6 query paths).
+  This is what covers TURN-relayed gameplay on arbitrary ports: relay on those
+  addresses runs at 10–40 pps and is caught whatever port or framing it wears
+  (including DTLS-wrapped relay), while ports 53/443 are always exempt as a
+  belt-and-braces.
 
 Safety properties:
 
 - DTLS records (content type 0x14–0x17, version 0xfefd) are never blocked in
-  either direction, so the ~2.1 s heartbeat to `turn.konami.com` cannot be
-  caught even by a port collision.
-- Healthy sessions never classify anything as relay or bypass traffic, so both
+  either direction *outside* the turn-relay rule, so the ~2.1 s heartbeat to
+  `turn.konami.com` cannot be caught even by a port collision. Inside the
+  turn-relay rule the heartbeat survives on **rate** instead of framing: one
+  packet per ~2.1 s can never reach 10 packets per 3 s, and the rate window is
+  shared between directions only for the same address:port — a relayed
+  gameplay stream is a different flow key than the heartbeat.
+- TURN addresses learned via DNS go into their own set, never into
+  `learnedStunServerIps`, so STUN interception can not swallow the heartbeat.
+- Healthy sessions never classify anything as relay or bypass traffic, so the
   rules are no-ops there.
 - Blocked packets are still recorded in the passthrough capture as evidence,
   annotated once via `PassthroughRecorder.note`, counted per rule, logged on
   the first block and every 1000th (`STRATEGIC-BLOCK`), and summarised every
-  30 s (`STRATEGIC` stats line: RelayBlocked / BypassBlocked / RemoteGamePort /
-  TunnelAgeMs).
+  30 s (`STRATEGIC` stats line: RelayBlocked / BypassBlocked / TurnRelayBlocked /
+  TurnIps / RemoteGamePort / TunnelAgeMs).
 
-Not covered: TURN-relayed gameplay on arbitrary ports — no capture of that
-signature exists in this repository; only the port-5735 relay signature is
-blockable with current evidence. IPv6 passthrough has no block rules yet (all
-observed failures were IPv4).
+Not covered: relay traffic to addresses that neither use port 5735, nor belong
+to `turn.konami.com`, nor match the peer's own game port (no capture of such a
+signature exists in this repository; if one appears, the passthrough capture
+will contain it for analysis). IPv6 passthrough has no block rules yet (all
+observed failures were IPv4); IPv6 answers for the turn hostname are likewise
+not tracked.
