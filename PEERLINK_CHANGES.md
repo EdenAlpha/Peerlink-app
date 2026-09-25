@@ -148,3 +148,55 @@ signature exists in this repository; if one appears, the passthrough capture
 will contain it for analysis). IPv6 passthrough has no block rules yet (all
 observed failures were IPv4); IPv6 answers for the turn hostname are likewise
 not tracked.
+
+## Rework: bridge-mode activation + Option-A private-door block
+
+The three rules above never fired in production. `handleTunAction` returns
+early in bridge mode — the mode production runs (the native backend owns the
+peer tunnel; `PassthroughBridgeEngine` provides the Internet passthrough) — so
+`strategicBlockReason` was unreachable on the send path, the periodic
+`STRATEGIC` stats line was suppressed by `if (bridgeMode) return`, and the
+bypass rule's inputs (`stableGameplayRemotePort`, `lastTunnelActivityMs`) are
+only written by the Kotlin tunnel paths, which are dead in bridge mode. Match
+m3 proved it: 17,114 leaked packets, zero `STRATEGIC-BLOCK` lines.
+
+Changes:
+
+1. **Strategic check runs in the bridge TX path** (`handleTunAction`). On a
+   hit the packet is recorded in the passthrough capture as evidence, counted,
+   announced (`STRATEGIC-BLOCK`), and **never enters the send queue** — this is
+   the exact pipe where the leak physically left the device (proven: the
+   leaked replies landed on this engine's own UDP flow sockets).
+2. **Option-A rule: gameplay-speed traffic to a PRIVATE destination** (RFC 1918
+   + CGNAT + link-local via `PacketParser.isPrivateIpBytes`) while the tunnel
+   is alive, in both directions, sharing one rate window per remote IP.
+   Evidence: the m3 leak was `10.7.6.86` (17,114 pkt @ ~27 pps to `:62195` +
+   1,571 to `:31118`, 134 replies) — a private address can never be a public
+   game service, so at ≥24 pps (`GAMEPLAY_PPS_MIN`) the only thing that fits
+   is direct peer gaming. Slow private traffic passes the rate gate; DNS
+   (port 53) is never evaluated; DTLS is exempt before the rule (heartbeat
+   untouchable by construction); the block fails **open** when the tunnel
+   stops reporting activity for 30 s.
+3. **Bridge tunnel-liveness**: native publishes cumulative tunneled counts via
+   `AppState.tunneled` every second; `noteBridgeTunnelActivity()` snapshots
+   that counter and refreshes `lastTunnelActivityMs` only while it moves, so
+   the 30 s window works (and prints as `TunnelAgeMs`) in bridge mode.
+4. **STRATEGIC stats line emitted in bridge mode** every 30 s
+   (`RelayBlocked / BypassBlocked / TurnRelayBlocked / TurnIps / RemoteGamePort
+   / TunnelAgeMs`) plus a `PASS` line with the tunneled total — the on-screen
+   proof the rules are armed.
+5. **Topology mislabel fix** (`MatchAutomationEngine.detectAndAdvertiseTopology`):
+   the old rule `route.contains(localIp)` matched every Wi-Fi client (its own
+   route prints `src <localIp>`), so both phones logged `HOTSPOT_OWNER`
+   (m3/old21 on wlan0) and disconnect faults were misattributed. Hotspot
+   ownership is now proven positively by an **up** `ap*`/`swlan*`/`softap`
+   interface; a client can never match it.
+6. **NET-DOORS logging**: at VPN start and on underlying-network changes the
+   app prints every interface with its IPv4 address
+   (`rmnet_data0=10.7.6.86 ap0=10.57.220.34 tun0=10.0.0.2`), so "which door
+   owns this address" is a log line, not a guess.
+
+Verification for the next test match: tunneled counter climbs; `STRATEGIC
+... BypassBlocked=N` grows on screen; `🛡 STRATEGIC-BLOCK bypass` lines name
+the private flow; the passthrough capture still contains every blocked packet
+as evidence; `topology=` matches the real roles.

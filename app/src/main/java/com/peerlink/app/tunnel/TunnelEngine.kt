@@ -739,6 +739,57 @@ class TunnelEngine(
         }
     }
 
+    // ---- Option A: private-destination gameplay streams ----
+    // Evidence: the m3 leak pushed 17,114 packets to 10.7.6.86:62195 plus 1,571 to
+    // :31118 at a rock-steady ~27pps while the fabricated-IP tunnel was alive, and the
+    // peer answered from that address (134 replies). Private ranges (RFC 1918 + CGNAT +
+    // link-local — PacketParser.isPrivateIpBytes) can never be public game services, so
+    // a PRIVATE address at GAMEPLAY SPEED can only be direct peer gaming. TX and RX
+    // share one window per remote IP so a bidirectional direct stream counts once.
+    private val privateFlowRateWindowMs = 1000L
+    private val privateFlowRateHotPackets = 24 // MatchAutomationEngine.GAMEPLAY_PPS_MIN
+    private val privateFlowRates = ConcurrentHashMap<String, RateWindow>()
+
+    private class RateWindow {
+        var windowStartMs = 0L
+        var count = 0
+    }
+
+    private fun privateFlowIsHot(remoteIp: String, nowMs: Long): Boolean {
+        if (privateFlowRates.size > 512) privateFlowRates.clear()
+        val rate = privateFlowRates.getOrPut(remoteIp) { RateWindow() }
+        synchronized(rate) {
+            if (nowMs - rate.windowStartMs >= privateFlowRateWindowMs) {
+                rate.windowStartMs = nowMs
+                rate.count = 0
+            }
+            rate.count++
+            return rate.count >= privateFlowRateHotPackets
+        }
+    }
+
+    private val bridgeTunnelSnapshotLock = Any()
+    private var bridgeTunnelSnapshot = Long.MIN_VALUE
+
+    /**
+     * Bridge-mode stand-in for tunnel liveness: the native backend owns the peer
+     * tunnel, so this engine never sees its packets directly. Native reports cumulative
+     * tunneled counts through [AppState.tunneled] every second; whenever that counter
+     * moves, the tunnel is demonstrably alive and [lastTunnelActivityMs] refreshes the
+     * same 30s window the bypass rules already use (printed as TunnelAgeMs in the
+     * STRATEGIC stats line). If the tunnel dies, the window expires and direct paths
+     * open again — the block fails OPEN instead of strangling a match.
+     */
+    private fun noteBridgeTunnelActivity() {
+        val moved = AppState.tunneled.get()
+        synchronized(bridgeTunnelSnapshotLock) {
+            if (moved != bridgeTunnelSnapshot) {
+                bridgeTunnelSnapshot = moved
+                lastTunnelActivityMs = System.currentTimeMillis()
+            }
+        }
+    }
+
     /**
      * Strategic block rules for OUTBOUND passthrough UDP (paired sessions only):
      *  - "turn-relay": traffic aimed at an IP learned for Konami's constant TURN/relay
@@ -753,6 +804,13 @@ class TunnelEngine(
      *    fabricated-IP tunnel is demonstrably alive. Evidence: the m3 session where
      *    17,114 gameplay packets went direct to the peer's real address (134 replies)
      *    instead of using the working tunnel.
+     *  - "bypass" (Option A, private): gameplay-speed traffic to a PRIVATE destination
+     *    (RFC 1918 / CGNAT / link-local) while the tunnel is demonstrably alive. A
+     *    private address can never be a public game service, so the only thing that
+     *    fits this pattern is direct peer gaming — the carrier 10.x door (the
+     *    10.7.6.86 leak), a hotspot/Wi-Fi LAN, ANY private door at once. Rate-gated at
+     *    GAMEPLAY_PPS_MIN (24pps) so slow private traffic passes, and fails OPEN when
+     *    the tunnel stops reporting activity for 30s.
      * Each rule is a no-op in healthy sessions (nothing classifies that way).
      */
     private fun strategicBlockReason(parsed: PacketParser.ParsedPacket, buffer: ByteArray): String? {
@@ -767,6 +825,18 @@ class TunnelEngine(
         }
         // Never touch DTLS elsewhere: the ~2.1s heartbeat to turn.konami.com must keep flowing.
         if (isDtlsRecord(buffer, parsed.udpPayloadOffset, parsed.udpPayloadLength)) return null
+        // Option A — private-destination gameplay stream. Placed AFTER the DTLS
+        // exemption so the turn.konami.com heartbeat is untouchable by construction,
+        // even if a resolver ever handed back a private address. DNS (port 53) is never
+        // evaluated. The rate gate (24pps/1s) keeps slow private traffic flowing; the
+        // tunnel-alive window fails open, so a dead tunnel never leaves the game with
+        // no road at all.
+        if (parsed.destPort != 53 && PacketParser.isPrivateIpBytes(parsed.destIpBytes) &&
+            privateFlowIsHot(parsed.destIp, System.currentTimeMillis())
+        ) {
+            if (bridgeMode) noteBridgeTunnelActivity()
+            if (System.currentTimeMillis() - lastTunnelActivityMs <= tunnelAliveWindowMs) return "bypass"
+        }
         if (parsed.destPort == strategicRelayPort && !PacketParser.isPrivateIpBytes(parsed.destIpBytes)) {
             return "relay"
         }
@@ -796,6 +866,15 @@ class TunnelEngine(
             }
         }
         if (isDtlsRecord(payload, 0, payload.size)) return null
+        // Mirror of the TX Option-A private rule; the shared per-IP window counts the
+        // bidirectional direct stream once, and blocking the peer's real-address
+        // replies stops a blocked direct path from looking alive to the game.
+        if (srcPort != 53 && PacketParser.isPrivateIpBytes(srcIpBytes) &&
+            privateFlowIsHot(formatIpv4Bytes(srcIpBytes), System.currentTimeMillis())
+        ) {
+            if (bridgeMode) noteBridgeTunnelActivity()
+            if (System.currentTimeMillis() - lastTunnelActivityMs <= tunnelAliveWindowMs) return "bypass"
+        }
         if (srcPort == strategicRelayPort && !PacketParser.isPrivateIpBytes(srcIpBytes)) return "relay"
         val remotePort = stableGameplayRemotePort ?: return null
         if (srcPort == remotePort && System.currentTimeMillis() - lastTunnelActivityMs <= tunnelAliveWindowMs) {
@@ -871,6 +950,7 @@ class TunnelEngine(
                 parsed.destPort == strategicRelayPort -> "strategic-relay-block"
                 stableGameplayRemotePort != null && parsed.destPort == stableGameplayRemotePort -> "strategic-bypass-block"
                 learnedTurnRelayIps.contains(parsed.destIp) -> "strategic-turn-relay-block"
+                PacketParser.isPrivateIpBytes(parsed.destIpBytes) -> "strategic-private-bypass-block"
                 else -> "drop"
             }
         }
@@ -1076,12 +1156,27 @@ class TunnelEngine(
     }
     
     private fun dumpStatsIfNeeded() {
-        if (bridgeMode) return
         val now = System.currentTimeMillis()
         val lastDump = DebugStats.lastStatsDump.get()
-        
+
         if (now - lastDump > 30_000) {
             DebugStats.lastStatsDump.set(now)
+
+            if (bridgeMode) {
+                // Bridge mode used to suppress this whole block, hiding the only
+                // on-screen proof that the send-side strategic rules are armed. Emit
+                // the strategic line (plus the counters it depends on) regardless;
+                // the detailed per-loop stats stay off.
+                debugLog(
+                    "STRATEGIC",
+                    "RelayBlocked=${DebugStats.strategicBlockedRelay.get()} | BypassBlocked=${DebugStats.strategicBlockedBypass.get()} | TurnRelayBlocked=${DebugStats.strategicBlockedTurnRelay.get()} | TurnIps=${learnedTurnRelayIps.size} | Enabled=$strategicBlockEnabled | RemoteGamePort=${stableGameplayRemotePort ?: "NONE"} | TunnelAgeMs=${if (lastTunnelActivityMs > 0L) now - lastTunnelActivityMs else -1L}"
+                )
+                debugLog(
+                    "PASS",
+                    "UDP=${DebugStats.passthroughUdp.get()} | TCP=${DebugStats.passthroughTcp.get()} | Tunneled=${AppState.tunneled.get()}"
+                )
+                return
+            }
             
             val peerIp = AppState.peerIp.get()?.hostAddress ?: "NOT SET"
             val isPaired = AppState.isPaired.get()
@@ -2151,6 +2246,25 @@ fun exactWifiUdpNetwork(): android.net.Network? {
         if (bridgeMode) {
             if (parsed.protocol == PacketParser.PROTOCOL_UDP) {
                 DebugStats.passthroughUdp.incrementAndGet()
+                // Production runs bridge mode: the native backend owns the peer tunnel
+                // and forwards every non-tunnel packet HERE to reach the Internet, so
+                // this is the path where the leak physically leaves the device. Run the
+                // strategic rules BEFORE the packet enters the send queue; on a hit the
+                // packet is recorded as evidence and never sent.
+                val bridgeReason = strategicBlockReason(parsed, buffer)
+                if (bridgeReason != null) {
+                    PassthroughRecorder.recordTx(buffer, length)
+                    noteStrategicBlock(
+                        bridgeReason,
+                        when (bridgeReason) {
+                            "relay" -> DebugStats.strategicBlockedRelay
+                            "turn-relay" -> DebugStats.strategicBlockedTurnRelay
+                            else -> DebugStats.strategicBlockedBypass
+                        },
+                        "tx ${parsed.sourceIp}:${parsed.sourcePort} -> ${parsed.destIp}:${parsed.destPort} len=$length"
+                    )
+                    return
+                }
             } else if (parsed.protocol == PacketParser.PROTOCOL_TCP) {
                 DebugStats.passthroughTcp.incrementAndGet()
             }

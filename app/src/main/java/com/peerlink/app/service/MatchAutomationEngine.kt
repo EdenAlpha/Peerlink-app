@@ -975,14 +975,27 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
 
     private suspend fun detectAndAdvertiseTopology() {
         val iface = AppState.localLanInterfaceName.get().orEmpty()
-        val localIp = AppState.localIp.get().orEmpty()
         val route = if (iface.isNotBlank() && PrimeClient.isAlive(350)) {
             PrimeClient.execute("ip route show dev ${iface.replace(Regex("[^A-Za-z0-9_.:-]"), "")}", 1_500).orEmpty()
         } else ""
+        // A SoftAP owner is identifiable POSITIVELY: it exposes an ap*/swlan*/softap
+        // interface, which a plain Wi-Fi client never has. The old rule
+        // `route.contains(localIp)` matched EVERY client too — its own route prints
+        // "src <localIp>" — so both phones logged HOTSPOT_OWNER (m3/old21 on wlan0)
+        // and disconnect faults got misattributed. Checked first because an owner can
+        // also carry a default route on another interface.
+        val hasSoftApIface = runCatching {
+            java.util.Collections.list(java.net.NetworkInterface.getNetworkInterfaces()).any { n ->
+                if (!runCatching { n.isUp }.getOrDefault(false)) return@any false
+                val name = n.name.orEmpty()
+                name.startsWith("ap") || name.startsWith("swlan") ||
+                    name.contains("softap", ignoreCase = true)
+            }
+        }.getOrDefault(false)
         val topology = when {
+            hasSoftApIface -> Topology.HOTSPOT_OWNER
             route.contains("default via") -> Topology.WIFI_CLIENT
             iface.contains("ap", ignoreCase = true) || iface.contains("soft", ignoreCase = true) -> Topology.HOTSPOT_OWNER
-            route.isNotBlank() && localIp.isNotBlank() && route.contains(localIp) -> Topology.HOTSPOT_OWNER
             else -> Topology.UNKNOWN
         }
         synchronized(lock) { localTopology = topology }

@@ -435,6 +435,7 @@ class PeerLinkVpnService : VpnService() {
             vpnInterface = null
             lastRawCaptureStats = RawCaptureStats()
             AppState.appendLog("[VPN-START ] TUN detached to native backend")
+            runCatching { logNetworkDoors("NET-DOORS") }
 
             nativeBackend = NativePeerLinkBackend(
                 config = backendConfig,
@@ -1054,6 +1055,7 @@ class PeerLinkVpnService : VpnService() {
         try {
             val cm = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
             val transportMode = canonicalTransportMode()
+            runCatching { logNetworkDoors("NET-DOORS") }
 
             val ordered = LinkedHashSet<Network>()
             val exactGameplay = resolveExactGameplayNetwork(cm, transportMode)
@@ -1095,6 +1097,27 @@ class PeerLinkVpnService : VpnService() {
         } catch (e: Exception) {
             AppState.appendLog("[VPN-UNDER ] Failed to set underlying networks: ${e.message}")
         }
+    }
+
+    /**
+     * Door-name logging: every interface with its IPv4 address, e.g.
+     * "ap0=10.57.220.34  rmnet_data0=10.7.6.86  tun0=10.0.0.2". This turns
+     * "which door owns this address?" from a guess into a single log line.
+     */
+    private fun logNetworkDoors(tag: String) {
+        val doors = runCatching {
+            java.util.Collections.list(java.net.NetworkInterface.getNetworkInterfaces())
+                .filter { !it.isLoopback }
+                .joinToString("  ") { n ->
+                    val v4 = java.util.Collections.list(n.inetAddresses)
+                        .filterIsInstance<java.net.Inet4Address>()
+                        .filter { !it.isLoopbackAddress }
+                        .joinToString("/") { it.hostAddress ?: "?" }
+                    val state = if (runCatching { n.isUp }.getOrDefault(false)) "" else "(down)"
+                    if (v4.isEmpty()) "${n.name}$state" else "${n.name}=$v4$state"
+                }
+        }.getOrDefault("unavailable")
+        AppState.appendLog("[$tag] $doors")
     }
 
     /**
