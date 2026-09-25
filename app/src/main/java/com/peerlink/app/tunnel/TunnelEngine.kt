@@ -559,6 +559,8 @@ class TunnelEngine(
         val dnsQueriesWatched = AtomicLong(0)
         val dnsResponsesProcessed = AtomicLong(0)
         val stunServersLearned = AtomicLong(0)
+        val strategicBlockedRelay = AtomicLong(0)
+        val strategicBlockedBypass = AtomicLong(0)
         val lastStatsDump = AtomicLong(System.currentTimeMillis())
         
         fun reset() {
@@ -570,6 +572,7 @@ class TunnelEngine(
             ipv6TunnelOut.set(0); ipv6TunnelIn.set(0); ipv6Injected.set(0)
             portCorrected.set(0); portChanges.set(0); injectionErrors.set(0)
             dnsQueriesWatched.set(0); dnsResponsesProcessed.set(0); stunServersLearned.set(0)
+            strategicBlockedRelay.set(0); strategicBlockedBypass.set(0)
             lastStatsDump.set(System.currentTimeMillis())
         }
     }
@@ -634,6 +637,18 @@ class TunnelEngine(
     private val udpFlowFirstSeen = ConcurrentHashMap.newKeySet<String>()
     private val udpFlowUiAnnounceCount = AtomicLong(0L)
 
+    // ---- Strategic relay/bypass blocking (paired sessions only) ----
+    // Evidence for the relay port: the only confirmed relay capture (06_Jan pcsp pcap)
+    // carried 44,140 gameplay packets on 34.155.120.34:5735 (F15 evidence port_pair
+    // [5735, 46220]); direct P2P in every other capture used ephemeral ports and never
+    // 5735 (which is outside Android's ephemeral range, so a peer socket can't source it).
+    // Evidence for the bypass rule: the m3 session where 17,114 gameplay packets went
+    // direct to the peer's real address while the fabricated-IP tunnel was alive.
+    private val strategicBlockEnabled = true
+    private val strategicRelayPort = 5735
+    private val tunnelAliveWindowMs = 30_000L
+    @Volatile private var lastTunnelActivityMs = 0L
+
     private data class TunnelDiagMeta(
         val senderId: Int,
         val flowHash: Int,
@@ -686,6 +701,77 @@ class TunnelEngine(
         return parsed.destPort == 53 || parsed.sourcePort == 53
     }
 
+    /**
+     * Strategic block rules for OUTBOUND passthrough UDP (paired sessions only):
+     *  - "relay": traffic aimed at a PUBLIC address on the known Konami relay port.
+     *    Evidence: the only confirmed relay capture (06_Jan) carried 44,140 gameplay
+     *    packets to 34.155.120.34:5735 at 43 pps; no direct-P2P capture ever used 5735.
+     *  - "bypass": traffic aimed at the peer's REAL gameplay port while the
+     *    fabricated-IP tunnel is demonstrably alive. Evidence: the m3 session where
+     *    17,114 gameplay packets went direct to the peer's real address (134 replies)
+     *    instead of using the working tunnel.
+     * Both rules are no-ops in healthy sessions (nothing classifies that way).
+     */
+    private fun strategicBlockReason(parsed: PacketParser.ParsedPacket, buffer: ByteArray): String? {
+        if (!strategicBlockEnabled) return null
+        if (parsed.protocol != PacketParser.PROTOCOL_UDP) return null
+        if (!AppState.isPaired.get()) return null
+        // Never touch DTLS: the ~2.1s heartbeat to turn.konami.com must keep flowing.
+        if (isDtlsRecord(buffer, parsed.udpPayloadOffset, parsed.udpPayloadLength)) return null
+        if (parsed.destPort == strategicRelayPort && !PacketParser.isPrivateIpBytes(parsed.destIpBytes)) {
+            return "relay"
+        }
+        val remotePort = stableGameplayRemotePort ?: return null
+        if (parsed.destPort == remotePort) {
+            if (System.currentTimeMillis() - lastTunnelActivityMs <= tunnelAliveWindowMs) return "bypass"
+        }
+        return null
+    }
+
+    /**
+     * Inbound twin of [strategicBlockReason]: passthrough replies coming back from the
+     * relay port or from the peer's real gameplay port. Tunneled traffic never passes
+     * through this path (it is injected by [injectInnerUdpToDevice]), so the rule can
+     * not touch the fabricated-IP stream.
+     */
+    private fun strategicBlockReasonRx(srcIpBytes: ByteArray, srcPort: Int, payload: ByteArray): String? {
+        if (!strategicBlockEnabled) return null
+        if (!AppState.isPaired.get()) return null
+        if (isDtlsRecord(payload, 0, payload.size)) return null
+        if (srcPort == strategicRelayPort && !PacketParser.isPrivateIpBytes(srcIpBytes)) return "relay"
+        val remotePort = stableGameplayRemotePort ?: return null
+        if (srcPort == remotePort && System.currentTimeMillis() - lastTunnelActivityMs <= tunnelAliveWindowMs) {
+            return "bypass"
+        }
+        return null
+    }
+
+    /**
+     * DTLS record: content type 0x14..0x17 followed by version 0xfefd (DTLS 1.0/1.2).
+     * The relay capture (06_Jan) is opaque with first bytes 6b/f1 and direct gameplay
+     * frames start with 00, so this guard can not be used to smuggle those through.
+     */
+    private fun isDtlsRecord(buf: ByteArray, offset: Int, len: Int): Boolean {
+        if (len < 3 || offset < 0 || offset + 3 > buf.size) return false
+        val contentType = buf[offset].toInt() and 0xff
+        if (contentType < 0x14 || contentType > 0x17) return false
+        return (buf[offset + 1].toInt() and 0xff) == 0xfe && (buf[offset + 2].toInt() and 0xff) == 0xfd
+    }
+
+    private fun noteStrategicBlock(reason: String, counter: AtomicLong, flow: String) {
+        val n = counter.incrementAndGet()
+        if (n == 1L || n % 1000L == 0L) {
+            debugLog("🛡 STRATEGIC-BLOCK", "$reason #$n $flow")
+        }
+        if (n == 1L) {
+            PassthroughRecorder.note("strategic_block reason=$reason $flow")
+        }
+    }
+
+    private fun formatIpv4Bytes(bytes: ByteArray): String {
+        return "${bytes[0].toInt() and 255}.${bytes[1].toInt() and 255}.${bytes[2].toInt() and 255}.${bytes[3].toInt() and 255}"
+    }
+
     private fun noteGameplayHint(nowMs: Long) {
         if (!forceTunnelAllUdpAfterGameplay) return
         if (gameplayStartHintMs == 0L) {
@@ -724,6 +810,8 @@ class TunnelEngine(
             }
             PacketParser.PacketAction.DROP -> when {
                 parsed.protocol != PacketParser.PROTOCOL_UDP -> "non-udp-to-fabricated-peer"
+                parsed.destPort == strategicRelayPort -> "strategic-relay-block"
+                stableGameplayRemotePort != null && parsed.destPort == stableGameplayRemotePort -> "strategic-bypass-block"
                 else -> "drop"
             }
         }
@@ -948,6 +1036,7 @@ class TunnelEngine(
             debugLog("ðŸ“Š DNS", "Watched=${DebugStats.dnsQueriesWatched.get()} | Responses=${DebugStats.dnsResponsesProcessed.get()} | ServersLearned=${DebugStats.stunServersLearned.get()}")
             debugLog("ðŸ“Š DNS-LEARNED", "IPv4=${PacketParser.learnedStunServerIps.joinToString(",")} | IPv6=${PacketParser.learnedStunServerIpv6s.size} entries")
             debugLog("ðŸ“Š STUN", "IPv4=${DebugStats.stunIntercepted.get()} | IPv6=${DebugStats.ipv6StunIntercepted.get()} | Responses=${DebugStats.stunResponsesSent.get()}")
+            debugLog("STRATEGIC", "RelayBlocked=${DebugStats.strategicBlockedRelay.get()} | BypassBlocked=${DebugStats.strategicBlockedBypass.get()} | Enabled=$strategicBlockEnabled | RemoteGamePort=${stableGameplayRemotePort ?: "NONE"} | TunnelAgeMs=${if (lastTunnelActivityMs > 0L) now - lastTunnelActivityMs else -1L}")
             debugLog("ðŸ“Š TUNNEL-OUT", "Total=${DebugStats.tunnelOutPackets.get()} pkts (${DebugStats.tunnelOutBytes.get()}b) | IPv6=${DebugStats.ipv6TunnelOut.get()}")
             debugLog("ðŸ“Š TUNNEL-IN", "Total=${DebugStats.tunnelInPackets.get()} pkts (${DebugStats.tunnelInBytes.get()}b) | IPv6=${DebugStats.ipv6TunnelIn.get()}")
             debugLog("ðŸ“Š INJECT", "IPv6=${DebugStats.ipv6Injected.get()} | PortCorrected=${DebugStats.portCorrected.get()} | Errors=${DebugStats.injectionErrors.get()}")
@@ -1951,13 +2040,33 @@ fun exactWifiUdpNetwork(): android.net.Network? {
         if (parsed.protocol == PacketParser.PROTOCOL_UDP && gameplayStartHintMs != 0L && !shouldExcludeFromForceTunnel(parsed)) {
             noteRawGameplayUdpForForceMode(nowMsForMode)
         }
-        val forcedTunnel = originalAction == PacketParser.PacketAction.PASSTHROUGH &&
+        val strategicReason = if (originalAction == PacketParser.PacketAction.PASSTHROUGH && parsed.protocol == PacketParser.PROTOCOL_UDP) {
+            strategicBlockReason(parsed, buffer)
+        } else {
+            null
+        }
+        val forcedTunnel = strategicReason == null &&
+            originalAction == PacketParser.PacketAction.PASSTHROUGH &&
             parsed.protocol == PacketParser.PROTOCOL_UDP &&
             allGameUdpTunnelModeActive &&
             !shouldExcludeFromForceTunnel(parsed)
-        val action = if (forcedTunnel) PacketParser.PacketAction.TUNNEL else originalAction
+        val action = when {
+            strategicReason != null -> PacketParser.PacketAction.DROP
+            forcedTunnel -> PacketParser.PacketAction.TUNNEL
+            else -> originalAction
+        }
 
         logUdpPacketMeta(parsed, length, action, forcedTunnel)
+        if (strategicReason != null) {
+            // Keep the packet in the passthrough capture as evidence of what the game
+            // tried to do, even though it never leaves the device.
+            PassthroughRecorder.recordTx(buffer, length)
+            noteStrategicBlock(
+                strategicReason,
+                if (strategicReason == "relay") DebugStats.strategicBlockedRelay else DebugStats.strategicBlockedBypass,
+                "tx ${parsed.sourceIp}:${parsed.sourcePort} -> ${parsed.destIp}:${parsed.destPort} len=$length"
+            )
+        }
 
         when (action) {
             PacketParser.PacketAction.PASSTHROUGH -> {
@@ -2063,6 +2172,7 @@ fun exactWifiUdpNetwork(): android.net.Network? {
         if (trackGameplayPort && parsed.protocol == PacketParser.PROTOCOL_UDP) {
             updateGamePort(parsed.sourcePort, parsed.destPort, "IPv4-TUNNEL-OUT")
         }
+        lastTunnelActivityMs = System.currentTimeMillis()
         val seq = outboundSeqCounter.incrementAndGet()
         val s1Ns = System.nanoTime()
         val flowHash = computeFlowHash(parsed)
@@ -2882,7 +2992,19 @@ fun exactWifiUdpNetwork(): android.net.Network? {
                         
                         val pkt = buildUdpIpPacket(ref.srcIp, ref.dstIp, ref.srcPort, ref.dstPort, payload, len)
                         PassthroughRecorder.recordRx(pkt, pkt.size)
-                        offerToDevice(pkt, pkt.size, "UDP-PASS")
+                        val rxReason = strategicBlockReasonRx(ref.srcIp, ref.srcPort, payload)
+                        if (rxReason != null) {
+                            // Record for evidence, but do not hand the packet to the game:
+                            // this reply belongs to the relay or to a direct peer-gaming
+                            // path that must not replace the fabricated-IP tunnel.
+                            noteStrategicBlock(
+                                rxReason,
+                                if (rxReason == "relay") DebugStats.strategicBlockedRelay else DebugStats.strategicBlockedBypass,
+                                "rx ${formatIpv4Bytes(ref.srcIp)}:${ref.srcPort} -> ${formatIpv4Bytes(ref.dstIp)}:${ref.dstPort} len=$len"
+                            )
+                        } else {
+                            offerToDevice(pkt, pkt.size, "UDP-PASS")
+                        }
                     }
                 }
             } catch (e: Exception) {
@@ -3178,6 +3300,12 @@ fun exactWifiUdpNetwork(): android.net.Network? {
             DebugStats.portCorrected.incrementAndGet()
         }
 
+        // Learn the peer's gameplay port from INBOUND tunnel traffic as well, so the
+        // strategic bypass rule arms even on a device whose own game never (or rarely)
+        // sends tunneled packets — e.g. the m3 side of the asymmetric-bypass session.
+        updateGamePort(targetPort, parsed.sourcePort, "IPv4-TUNNEL-IN")
+        lastTunnelActivityMs = System.currentTimeMillis()
+
         val payload = ByteArray(payloadLength)
         System.arraycopy(buffer, offset + payloadOffset, payload, 0, payloadLength)
         
@@ -3231,7 +3359,10 @@ fun exactWifiUdpNetwork(): android.net.Network? {
             if (peerSentPort != targetPort) {
                 DebugStats.portCorrected.incrementAndGet()
             }
-            
+
+            updateGamePort(targetPort, srcPort, "IPv6-TUNNEL-IN")
+            lastTunnelActivityMs = System.currentTimeMillis()
+
             val targetDstAddr = detectedGameIpv6Bytes ?: VPN_ADDRESS_IPV6_BYTES
             
             val correctedPacket = buildIpv6UdpPacket(srcAddr = srcAddr, dstAddr = targetDstAddr, srcPort = srcPort, dstPort = targetPort, payload = payload)

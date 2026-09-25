@@ -266,7 +266,7 @@ object PacketParser {
     /**
      * OPTIMIZED: Byte-based private IP check - no String.split() allocation
      */
-    private fun isPrivateIpBytes(ip: ByteArray): Boolean {
+    fun isPrivateIpBytes(ip: ByteArray): Boolean {
         val b0 = ip[0].toInt() and 255
         val b1 = ip[1].toInt() and 255
         

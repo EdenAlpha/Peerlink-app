@@ -74,3 +74,57 @@ Uploaded source tree: approximately 30,355 Kotlin/Java/C/C++/header lines across
 Cleaned tree: approximately 18,499 lines across 45 source files.
 
 Reduction: approximately 11,856 source lines (39.1%).
+
+# Strategic relay / direct-bypass blocking (gameplay regression fix)
+
+## Problem
+
+Match testing showed the current build playing badly: the tunneled counter
+stayed in single digits while the passthrough capture filled with gameplay
+packets, with occasional relay matches. Capture analysis found two failure
+modes, both of which bypass the fabricated-IP tunnel:
+
+1. **Konami relay fallback.** The only confirmed relay capture in the user's
+   GitHub `Pcsp` pcaps (`PCAPdroid_06_Jan_14_29_23.pcap`) carries 44,140
+   gameplay packets (42.9 pps) to `34.155.120.34:5735` — the only
+   gameplay-rate public flow in that capture. `tests/evidence_f15_port_validation.json`
+   records the same signature (`port_pair [5735, 46220]`, `relay_suspected: true`).
+   No direct-P2P capture ever used remote port 5735, and 5735 sits outside
+   Android's ephemeral range (32768–60999), so a peer socket cannot source it.
+2. **Direct-to-real-address bypass.** In the m3 capture of a bad match, the
+   game sent 17,114 gameplay packets direct to the peer's real socket
+   (`10.7.6.86:62195`) while the tunnel was alive and delivering; only 134
+   replies returned (0.8% — a black hole). The game learns the peer's real
+   address from Konami's encrypted signaling (host candidates), which PeerLink
+   cannot rewrite, so the only counter is to refuse that direct path.
+
+## Fix (TunnelEngine)
+
+Two block rules, active only while paired:
+
+- **relay**: passthrough UDP with remote port 5735 to a public address is
+  dropped in both directions.
+- **bypass**: passthrough UDP aimed at `stableGameplayRemotePort` (learned
+  from tunneled flows, now also learned from inbound tunnel traffic so the
+  device that rarely sends tunneled packets arms too) is dropped in both
+  directions, but only while a tunneled packet was seen within the last 30 s.
+  If the tunnel dies for real, the rule disarms itself after 30 s and ordinary
+  passthrough resumes.
+
+Safety properties:
+
+- DTLS records (content type 0x14–0x17, version 0xfefd) are never blocked in
+  either direction, so the ~2.1 s heartbeat to `turn.konami.com` cannot be
+  caught even by a port collision.
+- Healthy sessions never classify anything as relay or bypass traffic, so both
+  rules are no-ops there.
+- Blocked packets are still recorded in the passthrough capture as evidence,
+  annotated once via `PassthroughRecorder.note`, counted per rule, logged on
+  the first block and every 1000th (`STRATEGIC-BLOCK`), and summarised every
+  30 s (`STRATEGIC` stats line: RelayBlocked / BypassBlocked / RemoteGamePort /
+  TunnelAgeMs).
+
+Not covered: TURN-relayed gameplay on arbitrary ports — no capture of that
+signature exists in this repository; only the port-5735 relay signature is
+blockable with current evidence. IPv6 passthrough has no block rules yet (all
+observed failures were IPv4).
