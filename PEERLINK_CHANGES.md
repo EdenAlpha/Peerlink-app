@@ -200,3 +200,62 @@ Verification for the next test match: tunneled counter climbs; `STRATEGIC
 ... BypassBlocked=N` grows on screen; `ðŸ›¡ STRATEGIC-BLOCK bypass` lines name
 the private flow; the passthrough capture still contains every blocked packet
 as evidence; `topology=` matches the real roles.
+
+## Whistle tap: popup-free final-whistle capture (record & verify stage)
+
+Goal: let the app hear eFootball's own final whistle — never the microphone,
+never the MediaProjection "may capture passwords" dialog — so full-time
+detection can stop depending on a manual FT tap. This change ships the
+capture substrate and the verification tooling; auto-trigger logic lands next.
+
+Mechanism (`PrimeWhistleTap.kt`): Prime (app_process, shell uid) registers an
+`AudioPolicy` mix with `ROUTE_FLAG_LOOP_BACK_RENDER` through the Audio Policy
+API — the same underlying path as AudioPlaybackCapture, but authorised by
+`MODIFY_AUDIO_ROUTING`, which the shell uid holds since Android 13, instead of
+a consent dialog. Loop-back keeps the device's own playback alive, so the
+player keeps hearing the match (RemoteSubmix would mute the speaker).
+Precedents: scrcpy's default audio source and yume-chan's shell PoC. All
+audiopolicy entry points are resolved by runtime reflection, matching the
+existing SurfaceControl capture pattern (no hidden-API compile dependency).
+
+New pieces:
+
+1. **`PrimeWhistleTap`** — `probe(seconds)` (fixed-length, for Settings) and
+   `openSession()` (open-ended, for the FT hold), each an owned `Session`
+   with a reader thread, idempotent close, and a 60 s safety cap. Three
+   capture variants for the on-device experiment: `usage` (USAGE_GAME +
+   USAGE_MEDIA mix), `usage_priv` (allowPrivilegedPlaybackCapture), `uid`
+   (game-uid-only mix — nothing another app plays can enter the tap).
+2. **PrimeServer commands** `__audio_probe__` / `__audio_start__` /
+   `__audio_stop__` with their own busy flag — a probe or hold can never
+   block score captures; the probe refuses while a session is live and the
+   session auto-closes if the release never arrives.
+3. **PrimeClient** `audioProbe/audioStart/audioStop` (JSON + WAV binary over
+   the authenticated loopback socket, same pattern as scorecap).
+4. **`WhistleWav`** — pure-Kotlin canonical 44-byte WAV header/peak/silence
+   helpers with byte-exact unit tests (`WhistleWavTest`); a malformed header
+   would make a genuine whistle unplayable, which is the one failure mode the
+   verification feature cannot have.
+5. **Settings ? Whistle sounds** — "Record 10-second test" auto-tries the
+   three variants, keeps the first result that carries real audio, saves it
+   under `filesDir/whistle/tap_*.wav`, and lists every recording with
+   play/stop and delete so the user can hear with their own ears what was
+   captured (and what will ship in the export).
+6. **FT button gestures** — tap (<400 ms) behaves exactly like before
+   (score capture, same 220 ms guard, eFootball-foreground gate unchanged);
+   hold (=400 ms) records the game's audio press-to-release and, if the
+   result carries sound, saves `filesDir/whistle/ref_*.wav` with a distinct
+   vibration. Tap/cancel/overlay-teardown/mode-change all stop and discard
+   an accidentally started capture — no path can leave Prime recording with
+   no UI to stop it.
+7. **Export zip** — a `whistle/` folder (reference + probes) plus a manifest
+   line, so an exported match carries the audio evidence next to
+   `match_log.txt` and the packet captures.
+
+On-device verification for this stage: Prime active ? Settings ? Whistle
+sounds ? open eFootball with sound ? Record 10 s ? press play and confirm the
+menu sound/whistle is audible. Then in a match, hold FT at the final whistle
+and confirm `ref_*.wav` saves (vibration) and appears in Settings and in the
+next export. Failure modes report typed errors (`sdk_below_13`,
+`no_audio_routing_permission`, `register_failed`, `already_active`) in the
+log and on screen; silence is reported as silence, never as success.

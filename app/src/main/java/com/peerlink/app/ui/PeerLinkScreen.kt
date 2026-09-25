@@ -81,6 +81,7 @@ import com.peerlink.app.godmode.PrimeArtMode
 import com.peerlink.app.godmode.PrimeGraphicsBackend
 import com.peerlink.app.godmode.PrimeGraphicsMode
 import com.peerlink.app.godmode.PrimeLinkState
+import com.peerlink.app.godmode.PrimeClient
 import com.peerlink.app.godmode.PrimeMemoryAggression
 import com.peerlink.app.service.CallMonitorService
 import kotlinx.coroutines.delay
@@ -1102,6 +1103,168 @@ private fun statLabel(name: String): String = when (name) {
         Para("You earn PeerCoins by playing and winning matches over PeerLink.")
         Para("Goal difference sweetens it \u2014 beat your rival by more, earn more.")
     }
+    Acc(3, open, "Whistle sounds", "Record & play the final whistle", Icons.Rounded.GraphicEq, { open = if (open == 3) -1 else 3 }) {
+        WhistleSoundsBody(ctx)
+    }
+}
+
+private fun whistleDir(ctx: Context): java.io.File =
+    java.io.File(ctx.filesDir, "whistle").apply { mkdirs() }
+
+private fun whistleFiles(ctx: Context): List<java.io.File> =
+    whistleDir(ctx).listFiles()?.filter { it.isFile && it.name.endsWith(".wav") }
+        ?.sortedByDescending { it.name } ?: emptyList()
+
+/**
+ * Settings → Whistle sounds.
+ *
+ * Runs the popup-free Prime audio probe (shell loop-back tap, no microphone,
+ * no MediaProjection dialog), saves what was heard as a WAV so the user can
+ * play it back with their own ears and confirm the export zip contains a
+ * real whistle — not silence. Auto-tries three capture variants and keeps
+ * the first one that carries an audible signal.
+ */
+@Composable private fun WhistleSoundsBody(ctx: Context) {
+    val scope = rememberCoroutineScope()
+    var status by remember { mutableStateOf("Ready — open eFootball with sound on, then record.") }
+    var busy by remember { mutableStateOf(false) }
+    var playingName by remember { mutableStateOf<String?>(null) }
+    var files by remember { mutableStateOf(whistleFiles(ctx)) }
+    val player = remember { mutableStateOf<android.media.MediaPlayer?>(null) }
+
+    fun stopPlayback() {
+        player.value?.let { mp ->
+            try { mp.stop() } catch (_: Throwable) { }
+            mp.release()
+        }
+        player.value = null
+        playingName = null
+    }
+
+    Para("Listens to the app's own audio wire inside the phone \u2014 not the microphone \u2014 so sounds from the room, the TV or another app can never pass for the referee's whistle. Nothing is recorded unless you press the button.")
+    Spacer(Modifier.height(6.dp))
+    Para("How to test: open eFootball so sound is playing, press Record, and leave it for 10 seconds. Then press \u25B6 on the saved line to hear exactly what was captured.")
+    Spacer(Modifier.height(8.dp))
+    GhostBtn(if (busy) "Recording\u2026" else "Record 10-second test", Icons.Rounded.FiberManualRecord) {
+        if (busy) return@GhostBtn
+        busy = true
+        status = "Recording 10 seconds\u2026"
+        scope.launch {
+            try {
+                status = withContext(Dispatchers.IO) { runWhistleProbeChain(ctx) }
+            } catch (t: Throwable) {
+                status = "Failed: ${t.message}"
+                AppState.appendLog("[WHISTLE] probe crashed: ${t.javaClass.simpleName}: ${t.message}")
+            } finally {
+                busy = false
+                files = whistleFiles(ctx)
+            }
+        }
+    }
+    Spacer(Modifier.height(6.dp))
+    Text(status, color = PL.inkSoft, fontSize = 12.sp, lineHeight = 16.sp)
+    Spacer(Modifier.height(4.dp))
+    if (files.isEmpty()) {
+        Text("No recordings yet", color = PL.muted, fontSize = 12.sp)
+    }
+    files.forEach { f ->
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    f.name,
+                    color = PL.ink,
+                    fontSize = 12.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    fontFamily = FontFamily.Monospace,
+                )
+                Text("${f.length() / 1024} KB", color = PL.muted, fontSize = 10.5.sp)
+            }
+            IconButton(onClick = {
+                if (playingName == f.name) {
+                    stopPlayback()
+                } else {
+                    stopPlayback()
+                    try {
+                        val mp = android.media.MediaPlayer()
+                        mp.setDataSource(f.absolutePath)
+                        mp.setOnCompletionListener { done ->
+                            runCatching { done.release() }
+                            if (player.value === done) {
+                                player.value = null
+                                playingName = null
+                            }
+                        }
+                        mp.prepare()
+                        mp.start()
+                        player.value = mp
+                        playingName = f.name
+                    } catch (t: Throwable) {
+                        AppState.appendLog("[WHISTLE] play failed: ${t.message}")
+                    }
+                }
+            }) {
+                Icon(
+                    if (playingName == f.name) Icons.Rounded.Stop else Icons.Rounded.PlayArrow,
+                    contentDescription = if (playingName == f.name) "Stop" else "Play",
+                    tint = PL.ink,
+                )
+            }
+            IconButton(onClick = {
+                if (playingName == f.name) stopPlayback()
+                f.delete()
+                files = whistleFiles(ctx)
+            }) {
+                Icon(Icons.Rounded.Delete, contentDescription = "Delete", tint = PL.muted)
+            }
+        }
+    }
+}
+
+/**
+ * Try capture variants in order — plain usage mix, privileged usage mix,
+ * game-uid-only mix — and keep the first result that carries real audio.
+ * Returns the status line shown under the button.
+ */
+private fun runWhistleProbeChain(ctx: Context): String {
+    val variants = listOf(
+        "usage" to "game + media audio",
+        "usage_priv" to "privileged mix",
+        "uid" to "eFootball audio only",
+    )
+    var lastError = ""
+    for ((variant, label) in variants) {
+        val probe = PrimeClient.audioProbe(10, variant)
+            ?: return "Prime not reachable \u2014 activate Prime Mode first"
+        val h = probe.header
+        val sdk = h.optInt("sdk", -1)
+        val perm = h.optBoolean("audioRoutingPerm", false)
+        if (!h.optBoolean("ok", false)) {
+            val err = h.optString("error", "?") + " " + h.optString("detail", "")
+            lastError = err
+            AppState.appendLog("[WHISTLE] probe variant=$variant failed: $err (sdk=$sdk perm=$perm)")
+            if (h.optString("error") == "sdk_below_13") {
+                return "Needs Android 13 or newer \u2014 this phone reports $sdk"
+            }
+            continue
+        }
+        val silent = h.optBoolean("silent", true)
+        AppState.appendLog(
+            "[WHISTLE] probe variant=$variant ok bytes=${probe.wav.size} peak=${h.optInt("peak")} " +
+                "silent=$silent sdk=$sdk perm=$perm uid=${h.optInt("uid")}",
+        )
+        if (!silent && probe.wav.isNotEmpty()) {
+            val stamp = java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.US).format(java.util.Date())
+            val name = "tap_${stamp}_$variant.wav"
+            runCatching { java.io.File(whistleDir(ctx), name).writeBytes(probe.wav) }
+                .onFailure { return "Could not save recording: ${it.message}" }
+            return "Recorded ($label) \u2014 press \u25B6 to hear it"
+        }
+    }
+    if (lastError.contains("no_audio_routing_permission")) {
+        return "Shell audio permission missing \u2014 re-activate Prime Mode"
+    }
+    return "Tap opened but only silence came through \u2014 make sure game sound is on while recording"
 }
 
 @Composable private fun AdminMenu(ctx: Context, actions: PeerLinkActions) {

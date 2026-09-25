@@ -386,6 +386,17 @@ class MainActivity : AppCompatActivity(), NsdDiscovery.NsdCallback {
                                 for (shot in shots) {
                                     entries.add(ZipEntryData(name = "score_shots/${shot.name}", file = shot))
                                 }
+                                // Whistle tap recordings (reference + probes).
+                                // The player can listen to these to confirm the
+                                // export really contains the referee's whistle.
+                                val whistles = runCatching {
+                                    java.io.File(filesDir, "whistle").listFiles()
+                                        ?.filter { it.isFile && it.name.endsWith(".wav") }
+                                        ?.sortedBy { it.name } ?: emptyList<java.io.File>()
+                                }.getOrDefault(emptyList())
+                                for (w in whistles) {
+                                    entries.add(ZipEntryData(name = "whistle/${w.name}", file = w))
+                                }
                                 entries.add(
                                     ZipEntryData(
                                         name = "manifest.txt",
@@ -406,6 +417,9 @@ class MainActivity : AppCompatActivity(), NsdDiscovery.NsdCallback {
                                             }
                                             if (shots.isNotEmpty()) {
                                                 appendLine("- score_shots/  : ${shots.size} score capture shot(s)")
+                                            }
+                                            if (whistles.isNotEmpty()) {
+                                                appendLine("- whistle/      : ${whistles.size} whistle audio recording(s) (wav) — play to verify")
                                             }
                                         }
                                     )

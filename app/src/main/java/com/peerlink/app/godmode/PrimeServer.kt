@@ -40,6 +40,13 @@ object PrimeServer {
     private const val SCREENSHOT_CMD = "__screencap_png__"
     private const val SCORE_SCREENSHOT_CMD = "__scorecap_jpeg__"
     private const val FULLCAP_CMD = "__fullcap_jpeg__"
+    private const val AUDIO_PROBE_CMD = "__audio_probe__"
+    private const val AUDIO_START_CMD = "__audio_start__"
+    private const val AUDIO_STOP_CMD = "__audio_stop__"
+    private val audioBusy = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    @Volatile
+    private var audioSession: PrimeWhistleTap.Session? = null
     private const val MAX_SCREENSHOT_BYTES = 12 * 1024 * 1024
     private const val MAX_SCORE_FRAME_BYTES = 2 * 1024 * 1024
     private const val SCORE_FRAME_MAX_WIDTH = 960
@@ -253,6 +260,120 @@ object PrimeServer {
                 } finally {
                     screenshotBusy.set(false)
                 }
+            }
+
+            if (cmd == AUDIO_START_CMD) {
+                // FT hold gesture: begin an open-ended loop-back recording.
+                // Ended by AUDIO_STOP_CMD (or MAX_SESSION_SECONDS safety).
+                val resp = JSONObject()
+                if (!audioBusy.compareAndSet(false, true)) {
+                    resp.put("ok", false).put("error", "audio_busy")
+                } else {
+                    try {
+                        val active = audioSession
+                        if (active != null && active.isActive) {
+                            resp.put("ok", false).put("error", "already_active")
+                        } else {
+                            val variant = req.optString("variant", "usage")
+                            val pkg = req.optString("pkg", "jp.konami.pesam")
+                            val session = PrimeWhistleTap.openSession(variant, pkg)
+                            session.startReader()
+                            audioSession = session
+                            resp.put("ok", true)
+                            log("whistle tap started variant=$variant")
+                        }
+                    } catch (e: PrimeWhistleTap.ProbeFailed) {
+                        resp.put("ok", false).put("error", e.reason)
+                        if (e.detail.isNotEmpty()) resp.put("detail", e.detail)
+                        log("whistle tap start failed: ${e.reason} ${e.detail}")
+                    } catch (t: Throwable) {
+                        resp.put("ok", false).put("error", "exception")
+                        resp.put("detail", "${t.javaClass.simpleName}: ${t.message}")
+                        log("whistle tap start exception: ${t.message}")
+                    } finally {
+                        audioBusy.set(false)
+                    }
+                }
+                writer.println(resp.toString())
+                return
+            }
+
+            if (cmd == AUDIO_STOP_CMD) {
+                val session = audioSession
+                audioSession = null
+                if (session == null) {
+                    writer.println(JSONObject().put("ok", false).put("error", "not_active"))
+                    return
+                }
+                try {
+                    val (info, pcm) = session.stopAndDrain()
+                    if (pcm.isEmpty()) {
+                        info.put("ok", false)
+                        info.put("error", "no_data")
+                        writer.println(info.toString())
+                    } else {
+                        val wav = WhistleWav.wrap(pcm, PrimeWhistleTap.SAMPLE_RATE)
+                        info.put("ok", true)
+                        info.put("wav", true)
+                        info.put("binaryBytes", wav.size)
+                        writer.println(info.toString())
+                        writer.flush()
+                        socket.outputStream.write(wav)
+                        socket.outputStream.flush()
+                    }
+                    log("whistle tap stopped bytes=${pcm.size}")
+                } catch (t: Throwable) {
+                    log("whistle tap stop failed: ${t.message}")
+                    writer.println(
+                        JSONObject().put("ok", false).put("error", "stop_failed")
+                            .put("detail", t.message ?: t.javaClass.simpleName),
+                    )
+                }
+                return
+            }
+
+            if (cmd == AUDIO_PROBE_CMD) {
+                // Whistle-tap probe: record the loop-back app-audio mix and
+                // stream a WAV back. Long-running (seconds), so it gets its
+                // own busy flag — a probe must never block score captures.
+                if (audioSession?.isActive == true) {
+                    writer.println(JSONObject().put("ok", false).put("error", "already_active"))
+                    return
+                }
+                if (!audioBusy.compareAndSet(false, true)) {
+                    writer.println(JSONObject().put("ok", false).put("error", "audio_busy"))
+                    return
+                }
+                try {
+                    val seconds = req.optLong("seconds", 10L).coerceIn(3L, 30L).toInt()
+                    val variant = req.optString("variant", "usage")
+                    val pkg = req.optString("pkg", "jp.konami.pesam")
+                    val outcome = PrimeWhistleTap.probe(seconds, variant, pkg)
+                    val json = outcome.json
+                    val wav = outcome.wav
+                    if (json.optBoolean("ok", false) && wav != null) {
+                        json.put("wav", true)
+                        json.put("binaryBytes", wav.size)
+                        writer.println(json.toString())
+                        writer.flush()
+                        socket.outputStream.write(wav)
+                        socket.outputStream.flush()
+                    } else {
+                        log("audio probe failed: ${json.optString("error")} ${json.optString("detail")}")
+                        writer.println(json.toString())
+                    }
+                } catch (t: Throwable) {
+                    log("audio probe exception: ${t.javaClass.simpleName}: ${t.message}")
+                    writer.println(
+                        JSONObject()
+                            .put("ok", false)
+                            .put("error", "exception")
+                            .put("detail", t.message ?: t.javaClass.simpleName),
+                    )
+                } finally {
+                    audioBusy.set(false)
+                }
+                return
             }
 
             val output = when (cmd) {

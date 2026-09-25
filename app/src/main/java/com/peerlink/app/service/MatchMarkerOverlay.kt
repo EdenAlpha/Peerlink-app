@@ -21,6 +21,7 @@ import android.view.animation.LinearInterpolator
 import android.widget.LinearLayout
 import android.widget.TextView
 import com.peerlink.app.core.AppState
+import com.peerlink.app.godmode.PrimeClient
 
 /**
  * Small in-game match overlay.
@@ -44,6 +45,14 @@ object MatchMarkerOverlay {
     private var attentionAnimator: ObjectAnimator? = null
     private var conflictAnimator: ObjectAnimator? = null
 
+    /** Serializes FT hold start/stop so Prime sees a strict press→release order. */
+    private val whistleExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+        Thread(r, "whistle-tap").apply { isDaemon = true }
+    }
+
+    @Volatile
+    private var ftRecording = false
+
     private fun dp(context: Context, value: Int): Int =
         (value * context.resources.displayMetrics.density + 0.5f).toInt()
 
@@ -51,6 +60,12 @@ object MatchMarkerOverlay {
         stopAttention()
         conflictAnimator?.cancel()
         conflictAnimator = null
+        if (ftRecording) {
+            // Overlay torn down mid-hold: close the tap so Prime never keeps
+            // a session alive with no UI able to stop it.
+            ftRecording = false
+            whistleExecutor.execute { discardWhistleTap() }
+        }
         root?.let { view -> runCatching { windowManager?.removeView(view) } }
         root = null
         actions = null
@@ -240,6 +255,12 @@ object MatchMarkerOverlay {
     private fun setMode(newMode: Mode) {
         main.post {
             if (mode == newMode) return@post
+            if (mode == Mode.FULL_TIME && ftRecording) {
+                // The FT button vanished mid-hold (auto-capture won the race):
+                // never leave Prime recording in the background.
+                ftRecording = false
+                whistleExecutor.execute { discardWhistleTap() }
+            }
             mode = newMode
             if (newMode != Mode.SIDE_CHOICES) stopAttention()
             renderActions()
@@ -297,13 +318,138 @@ object MatchMarkerOverlay {
                     MatchAutomationEngine.confirmLocalSide(MatchControlChannel.Side.AWAY)
                 }
             )
-            Mode.FULL_TIME -> box.addView(
-                button("FT", "Capture visible full-time score", 0xFF733B49.toInt()) {
-                    MatchAutomationEngine.manualFullTimeCapture()
-                }
-            )
+            Mode.FULL_TIME -> box.addView(whistleFtButton(app))
         }
     }
+
+    /**
+     * FT button with two gestures:
+     *  tap  (<400 ms) — exactly the previous behavior: grab the visible
+     *                   full-time score through MatchAutomationEngine.
+     *  hold (≥400 ms) — record the game's own audio while held (press starts
+     *                   Prime's loop-back tap, release stops it). A held
+     *                   recording that carries sound is saved under
+     *                   filesDir/whistle/ref_*.wav so Settings can play it
+     *                   back and the match export zip can carry it.
+     *
+     * A quick tap also cancels the capture its press accidentally started, so
+     * the tap path can never leave Prime recording in the background.
+     */
+    private fun whistleFtButton(app: Context): TextView {
+        val view = TextView(app).apply {
+            text = "FT"
+            setTextColor(Color.WHITE)
+            textSize = 13f
+            gravity = Gravity.CENTER
+            minWidth = dp(app, 58)
+            minHeight = dp(app, 50)
+            setPadding(dp(app, 8), 0, dp(app, 8), 0)
+            contentDescription = "Tap: capture score. Hold: record the whistle."
+            background = GradientDrawable().apply {
+                setColor(0xFF733B49.toInt())
+                cornerRadius = dp(app, 13).toFloat()
+            }
+        }
+        var downAt = 0L
+        view.setOnTouchListener { v, ev ->
+            when (ev.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    if (!AppState.isRunning.get()) return@setOnTouchListener true
+                    downAt = android.os.SystemClock.elapsedRealtime()
+                    v.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                    ftRecording = true
+                    whistleExecutor.execute {
+                        val resp = PrimeClient.audioStart()
+                        if (resp?.optBoolean("ok", false) == true) {
+                            AppState.appendLog("[WHISTLE] hold recording started")
+                        } else {
+                            ftRecording = false
+                            AppState.appendLog(
+                                "[WHISTLE] hold start failed: ${resp?.optString("error") ?: "Prime unreachable"}",
+                            )
+                        }
+                    }
+                    true
+                }
+                MotionEvent.ACTION_UP -> {
+                    val held = android.os.SystemClock.elapsedRealtime() - downAt
+                    val started = ftRecording
+                    ftRecording = false
+                    if (AppState.isRunning.get() && held >= 400L && started) {
+                        whistleExecutor.execute { stopAndSaveReference(app) }
+                    } else {
+                        // Tap, or a hold that never actually started recording.
+                        whistleExecutor.execute { discardWhistleTap() }
+                        val now = android.os.SystemClock.elapsedRealtime()
+                        if (AppState.isRunning.get() && now - lastTapMs >= 220L) {
+                            lastTapMs = now
+                            v.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                            MatchAutomationEngine.manualFullTimeCapture()
+                        }
+                    }
+                    true
+                }
+                MotionEvent.ACTION_CANCEL -> {
+                    if (ftRecording) whistleExecutor.execute { discardWhistleTap() }
+                    ftRecording = false
+                    true
+                }
+                else -> true
+            }
+        }
+        return view
+    }
+
+    /** Release-side of the hold: fetch the WAV and keep it if it has sound. */
+    private fun stopAndSaveReference(app: Context) {
+        val probe = PrimeClient.audioStop()
+        val header = probe?.header
+        val err = header?.optString("error", "").orEmpty()
+        if (probe == null || header == null || !header.optBoolean("ok", false) || probe.wav.isEmpty()) {
+            AppState.appendLog("[WHISTLE] hold ended without audio: ${err.ifBlank { "no response" }}")
+            val ctx = appContext ?: app
+            main.post { vibrate(ctx, durationMs = 85L, amplitude = 110) }
+            return
+        }
+        if (header.optBoolean("silent", true)) {
+            AppState.appendLog("[WHISTLE] hold heard only silence (${probe.wav.size} bytes) — not saved")
+            val ctx = appContext ?: app
+            main.post { vibrate(ctx, durationMs = 85L, amplitude = 110) }
+            return
+        }
+        val name = saveWhistleFile(app, "ref", probe.wav)
+        if (name != null) {
+            AppState.appendLog(
+                "[WHISTLE] reference saved: $name (${probe.wav.size} bytes, peak=${header.optInt("peak")})",
+            )
+            val ctx = appContext ?: app
+            main.post { vibrate(ctx, durationMs = 120L, amplitude = 170) }
+        } else {
+            AppState.appendLog("[WHISTLE] reference save failed (disk)")
+            val ctx = appContext ?: app
+            main.post { vibrate(ctx, durationMs = 85L, amplitude = 110) }
+        }
+    }
+
+    /** Best-effort close of an unwanted session (tap path, teardown). */
+    private fun discardWhistleTap() {
+        runCatching {
+            val probe = PrimeClient.audioStop(timeoutMs = 5_000)
+            if (probe?.header?.optBoolean("ok", false) == true) {
+                AppState.appendLog("[WHISTLE] short capture discarded")
+            }
+            // "not_active" is the common, expected outcome here — stays quiet.
+        }
+    }
+
+    private fun saveWhistleFile(app: Context, prefix: String, wav: ByteArray): String? = runCatching {
+        val dir = java.io.File(app.filesDir, "whistle").apply { mkdirs() }
+        val stamp = java.text.SimpleDateFormat("yyyyMMdd-HHmmss", java.util.Locale.US)
+            .format(java.util.Date())
+        val file = java.io.File(dir, "${prefix}_${stamp}.wav")
+        file.writeBytes(wav)
+        file.name
+    }.getOrNull()
 
     private fun startAttention() {
         val app = appContext ?: return

@@ -151,6 +151,102 @@ object PrimeClient {
         }
     }
 
+    data class AudioProbe(val header: JSONObject, val wav: ByteArray)
+
+    /**
+     * Record [seconds] of the device's app-audio mix through Prime's
+     * loop-back tap (shell MODIFY_AUDIO_ROUTING — no microphone, no
+     * MediaProjection dialog). The header is returned even on failure so the
+     * caller can show Prime's typed error; wav is empty in that case.
+     */
+    fun audioProbe(seconds: Int, variant: String, pkg: String = "jp.konami.pesam"): AudioProbe? {
+        val token = PrimeAuth.tokenOrNull() ?: return null
+        val timeoutMs = seconds * 1000 + 12_000
+        return try {
+            Socket().use { s ->
+                s.soTimeout = timeoutMs
+                s.connect(InetSocketAddress(HOST, PORT), 3_000)
+                val req = JSONObject().apply {
+                    put("token", token)
+                    put("cmd", "__audio_probe__")
+                    put("seconds", seconds)
+                    put("variant", variant)
+                    put("pkg", pkg)
+                }.toString() + "\n"
+                val output = s.getOutputStream()
+                output.write(req.toByteArray(Charsets.UTF_8))
+                output.flush()
+
+                val input = s.getInputStream()
+                val headerLine = readUtf8LineLimited(input, 16 * 1024) ?: return null
+                val header = JSONObject(headerLine)
+                if (!header.optBoolean("ok", false)) return AudioProbe(header, ByteArray(0))
+                val length = header.optInt("binaryBytes", -1)
+                if (length !in 64..(12 * 1024 * 1024)) return AudioProbe(header, ByteArray(0))
+                val bytes = readExactly(input, length) ?: return null
+                AudioProbe(header, bytes)
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /**
+     * Begin an open-ended whistle-tap recording (FT hold gesture: press =
+     * start, release = [audioStop]). Prime enforces its own60 s safety cap
+     * so a lost stop can never leak an eternal capture.
+     */
+    fun audioStart(variant: String = "usage", pkg: String = "jp.konami.pesam"): JSONObject? {
+        val token = PrimeAuth.tokenOrNull() ?: return null
+        return try {
+            Socket().use { s ->
+                s.soTimeout = 8_000
+                s.connect(InetSocketAddress(HOST, PORT), 2_000)
+                val req = JSONObject().apply {
+                    put("token", token)
+                    put("cmd", "__audio_start__")
+                    put("variant", variant)
+                    put("pkg", pkg)
+                }.toString() + "\n"
+                val output = s.getOutputStream()
+                output.write(req.toByteArray(Charsets.UTF_8))
+                output.flush()
+                val line = readUtf8LineLimited(s.getInputStream(), 8 * 1024) ?: return null
+                JSONObject(line)
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /** Stop the recording started by [audioStart]; returns header + WAV. */
+    fun audioStop(timeoutMs: Int = 10_000): AudioProbe? {
+        val token = PrimeAuth.tokenOrNull() ?: return null
+        return try {
+            Socket().use { s ->
+                s.soTimeout = timeoutMs
+                s.connect(InetSocketAddress(HOST, PORT), 2_000)
+                val req = JSONObject().apply {
+                    put("token", token)
+                    put("cmd", "__audio_stop__")
+                }.toString() + "\n"
+                val output = s.getOutputStream()
+                output.write(req.toByteArray(Charsets.UTF_8))
+                output.flush()
+                val input = s.getInputStream()
+                val headerLine = readUtf8LineLimited(input, 16 * 1024) ?: return null
+                val header = JSONObject(headerLine)
+                if (!header.optBoolean("ok", false)) return AudioProbe(header, ByteArray(0))
+                val length = header.optInt("binaryBytes", -1)
+                if (length !in 64..(12 * 1024 * 1024)) return AudioProbe(header, ByteArray(0))
+                val bytes = readExactly(input, length) ?: return null
+                AudioProbe(header, bytes)
+            }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     /**
      * Capture the current display directly from the privileged Prime process.
      * The PNG is streamed over loopback; no storage permission, temporary file,
