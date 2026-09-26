@@ -184,6 +184,12 @@ object PacketParser {
         cachedPeerFabricatedIp = ip
         cachedPeerFabricatedIpBytes = ipStringToBytesNoAlloc(ip)
     }
+
+    // HONEST MODE (§7.3 real fix): cached real peer-LAN bytes for RULE 1b.
+    @Volatile
+    private var cachedPeerLanIpBytes: ByteArray? = null
+    @Volatile
+    private var cachedPeerLanIp: String? = null
     
     // OPTIMIZED: No split(), no regex, no intermediate objects
     private fun ipStringToBytesNoAlloc(ip: String): ByteArray {
@@ -222,6 +228,25 @@ object PacketParser {
                 PacketAction.TUNNEL
             } else {
                 PacketAction.DROP
+            }
+        }
+
+        // RULE 1b: HONEST MODE — tunnel game UDP toward the REAL peer LAN
+        // (fabrication off: game addresses peer by real 10.x host candidate;
+        // keep P2P on the tunnel so pps/score visibility + QoS survive).
+        // Paired-only so pre-pairing discovery beacons stay passthrough.
+        if (!StunFabricator.fabricationEnabled && AppState.isPaired.get()) {
+            val peerLanIp = AppState.peerIp.get()?.hostAddress
+            if (peerLanIp != null) {
+                if (cachedPeerLanIp != peerLanIp) {
+                    cachedPeerLanIp = peerLanIp
+                    cachedPeerLanIpBytes = ipStringToBytesNoAlloc(peerLanIp)
+                }
+                val lanBytes = cachedPeerLanIpBytes
+                if (lanBytes != null && packet.protocol == PROTOCOL_UDP &&
+                    ipBytesEqual(packet.destIpBytes, lanBytes)) {
+                    return PacketAction.TUNNEL
+                }
             }
         }
 

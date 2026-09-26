@@ -2449,7 +2449,11 @@ fun exactWifiUdpNetwork(): android.net.Network? {
             offerToDevice(response, response.size, "STUN-v4")
             AppState.passedThrough.incrementAndGet()
         } else {
-            debugLog("âŒ STUN-IPv4", "Failed to fabricate response!")
+            // HONEST MODE (§7.3): fabrication off (or unknown profile) must NOT
+            // swallow STUN — passthrough to the real server so the game learns
+            // its true reflexive. Dropping here would break NAT discovery.
+            debugLog("STUN-IPv4", "passthrough real STUN (fabrication off/unknown profile)")
+            handlePassthrough(buffer, length, parsed)
         }
     }
 
