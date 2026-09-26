@@ -134,6 +134,21 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
     private var lastStats: NativeBackendStats? = null
     private var lastStatsAtMs = 0L
     private var stunSeen = false
+
+    // ── Semi-automatic H/A suggestion state ──────────────────────────────
+    // Rule: room creator is always Home. Each phone timestamps its first
+    // Konami matchmaking STUN burst (wall clock), the times cross over the
+    // control channel, and SideSuggestion decides. Advisory only: the card
+    // is shown, the human taps (or holds to flip); nothing locks alone.
+    private var localFirstStunMs = 0L
+    private var peerFirstStunMs = 0L
+    private var lastStunCountSeen = 0L
+    private var lastStunChangeAtMs = 0L
+    private var suggestionSwapped = false
+    private var pendingSuggestionConfirm = false
+
+    /** A new burst after this quiet gap = a new room's matchmaking call. */
+    private const val STUN_BURST_QUIET_MS = 10_000L
     private var sideSelectionStarted = false
 
     private var ppsDirection: PpsDirection? = null
@@ -215,6 +230,8 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
         var logCapture: String? = null
         var noteCliff = false
         var sustainedZeroBuzz = false
+        var sendStunTime = false
+        var localStunLog: String? = null
 
         synchronized(lock) {
             val previous = lastStats
@@ -223,10 +240,29 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
             lastStatsAtMs = now
             stunSeen = stunSeen || stats.stunInterceptedIpv4 > 0L || stats.stunInterceptedIpv6 > 0L
 
+            // First — or a fresh burst of — matchmaking STUN is this phone's
+            // room-call time. Wall clock: the two phones compare it directly,
+            // and SideSuggestion's 45 s–30 min window absorbs clock skew and
+            // stale times from an older room.
+            val stunCount = stats.stunInterceptedIpv4 + stats.stunInterceptedIpv6
+            if (stunCount > lastStunCountSeen) {
+                val freshBurst = lastStunCountSeen == 0L ||
+                    now - lastStunChangeAtMs >= STUN_BURST_QUIET_MS
+                lastStunCountSeen = stunCount
+                lastStunChangeAtMs = now
+                if (freshBurst) {
+                    localFirstStunMs = System.currentTimeMillis()
+                    sendStunTime = true
+                    localStunLog = "[MATCH-ROLE] Local matchmaking call recorded (t=$localFirstStunMs)"
+                }
+            }
+
             if (!sideSelectionStarted && stunSeen && stats.totalTunneledPackets >= SIDE_PROMPT_PACKET_THRESHOLD) {
                 sideSelectionStarted = true
                 startSidePrompt = true
                 detectTopology = true
+                // (Re)send our time so the peer has it when the card renders.
+                sendStunTime = true
             }
 
             // Fresh 54B signal since the previous poll (monotonic counter).
@@ -426,6 +462,12 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
             vibrateFullTimeMarker("after ${SUSTAINED_ZERO_PPS_MS / 1000}s at 0pps")
         }
         if (startProducer) startProducerIfIdle()
+        localStunLog?.let { AppState.appendLog(it) }
+        if (sendStunTime) {
+            val t = synchronized(lock) { localFirstStunMs }
+            if (t > 0L) MatchControlChannel.sendStunTime(t)
+            refreshSuggestion()
+        }
         if (startSidePrompt) MatchMarkerOverlay.beginSideSelection()
         if (detectTopology) scope.launch { detectAndAdvertiseTopology() }
         if (resolveDisconnect) scope.launch { resolveSustainedDisconnect() }
@@ -535,6 +577,19 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
         }
         if (conflict) roleConflict("peer also selected ${side.name}")
         else if (lockedNow) onRolesLocked()
+        else {
+            // The human tapped our suggestion card; the confirm just needed
+            // the peer's side to arrive. Completing it now still traces back
+            // to that tap — no tap on this phone, no confirm.
+            val confirmNow = synchronized(lock) {
+                val mine = localSide
+                pendingSuggestionConfirm && !rolesLocked && mine != null && peerSide == mine.opposite()
+            }
+            if (confirmNow) {
+                AppState.appendLog("[MATCH-ROLE] Peer choice arrived — completing card-tap confirm")
+                synchronized(lock) { localSide }?.let { confirmLocalSide(it) }
+            }
+        }
     }
 
     override fun onPeerRoleReset() {
@@ -565,6 +620,97 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
         MatchTracker.confirmForfeit(localPlayerLost = false, reason = "peer:$reason")
         MatchMarkerOverlay.setWaiting()
         AppState.appendLog("[MATCH-AUTO] Peer forfeit received reason=$reason -> local 3-0")
+    }
+
+    override fun onPeerStunTime(epochMs: Long) {
+        synchronized(lock) {
+            if (!started || epochMs <= 0L) return
+            peerFirstStunMs = epochMs
+        }
+        refreshSuggestion()
+        AppState.appendLog("[MATCH-ROLE] Peer matchmaking call time received (t=$epochMs)")
+    }
+
+    override fun onPeerSwap() {
+        synchronized(lock) {
+            if (!started) return
+            // Idempotent on purpose: sendReliable delivers three copies and
+            // both players may hold — one flip is always exactly one flip.
+            suggestionSwapped = true
+            pendingSuggestionConfirm = false
+        }
+        refreshSuggestion()
+        AppState.appendLog("[MATCH-ROLE] Peer swapped the suggestion — both sides flip")
+    }
+
+    /** Recompute from the exchanged times and publish to the overlay. */
+    private fun refreshSuggestion() {
+        var haveBoth = false
+        var detail = ""
+        val side = synchronized(lock) {
+            haveBoth = localFirstStunMs > 0L && peerFirstStunMs > 0L
+            if (haveBoth) {
+                val gap = kotlin.math.abs(localFirstStunMs - peerFirstStunMs)
+                detail = "gap=${gap / 1000}s swapped=$suggestionSwapped"
+            }
+            if (!started || scoreConfirmed || rolesLocked || !sideSelectionStarted) {
+                null
+            } else {
+                computeSuggestionLocked()
+            }
+        }
+        if (side != null || haveBoth) {
+            AppState.appendLog(
+                "[MATCH-ROLE] Side suggestion ${side?.name ?: "none"} ($detail)",
+            )
+        }
+        MatchMarkerOverlay.showSideSuggestion(side)
+    }
+
+    private fun computeSuggestionLocked(): MatchControlChannel.Side? =
+        SideSuggestion.compute(localFirstStunMs, peerFirstStunMs, suggestionSwapped)
+
+    /**
+     * Tap on the suggestion card: accept the suggested side in one step.
+     * Locking still needs the peer's own tap — pendingSuggestionConfirm just
+     * finishes the confirm the moment the peer's choice arrives, so a card is
+     * never auto-locked without a human tap on BOTH phones.
+     */
+    fun acceptSideSuggestion() {
+        val side = synchronized(lock) {
+            if (!started || !sideSelectionStarted || scoreConfirmed || rolesLocked) return
+            computeSuggestionLocked()
+        } ?: return
+        chooseLocalSide(side)
+        var confirmNow = false
+        synchronized(lock) {
+            if (!scoreConfirmed && !rolesLocked && localSide == side) {
+                pendingSuggestionConfirm = true
+                confirmNow = peerSide != null
+            }
+        }
+        AppState.appendLog("[MATCH-ROLE] Suggestion accepted: ${side.name}")
+        if (confirmNow) confirmLocalSide(side)
+    }
+
+    /**
+     * Hold on the suggestion card: the player disagrees — reset both phones
+     * and flip the suggestion on both, so each side taps once again on the
+     * opposite answer. Never flips alone: the SWAP message travels with the
+     * RESET so the peer's card flips too.
+     */
+    fun swapSideSuggestion() {
+        synchronized(lock) {
+            if (!started || scoreConfirmed) return
+            suggestionSwapped = true
+            pendingSuggestionConfirm = false
+            resetRolesLocked()
+        }
+        MatchControlChannel.sendReset()
+        MatchControlChannel.sendSwap()
+        refreshSuggestion()
+        MatchMarkerOverlay.beginSideSelection()
+        AppState.appendLog("[MATCH-ROLE] Suggestion hold — both sides flip, re-tap to lock")
     }
 
     fun manualFullTimeCapture() {
@@ -895,6 +1041,7 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
         peerSide = null
         peerSideConfirmed = false
         rolesLocked = false
+        pendingSuggestionConfirm = false
     }
 
     private fun resetSessionLocked() {
@@ -904,6 +1051,13 @@ object MatchAutomationEngine : MatchControlChannel.Listener {
         lastStatsAtMs = 0L
         stunSeen = false
         sideSelectionStarted = false
+        // Fresh session = fresh room: forget both matchmaking times and any
+        // swap so the suggestion is rebuilt from this room's own evidence.
+        lastStunCountSeen = 0L
+        lastStunChangeAtMs = 0L
+        localFirstStunMs = 0L
+        peerFirstStunMs = 0L
+        suggestionSwapped = false
         ppsDirection = null
         gameplayT0Ms = 0L
         gameplayBandHits = 0

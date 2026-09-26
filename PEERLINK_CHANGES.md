@@ -259,3 +259,50 @@ and confirm `ref_*.wav` saves (vibration) and appears in Settings and in the
 next export. Failure modes report typed errors (`sdk_below_13`,
 `no_audio_routing_permission`, `register_failed`, `already_active`) in the
 log and on screen; silence is reported as silence, never as success.
+
+## Semi-automatic Home/Away suggestion (tap = lock, hold = swap)
+
+The standing rule from every recorded match: whoever CREATES the room is
+always HOME, never AWAY (all side locks across the evening session - host
+made every room, locked HOME - and the morning session - brother made every
+room, locked HOME). The creator is already waiting in the lobby, so its
+first STUN binding request to Konami's matchmaking servers goes out BEFORE
+the joiner's. That ordering was confirmed on the analysed exports (gaps of
+2 min and 5 min between the two phones' first calls).
+
+What ships now:
+
+1. **SideSuggestion.kt** (pure, unit-tested) - decides from two timestamps:
+   earlier caller = room creator = HOME for that phone. No timestamps, gaps
+   under 45 s (clock skew / simultaneous start) or over 30 min (times from
+   different rooms) = NO suggestion, plain manual H/A stays. The rule never
+   auto-applies: it only proposes.
+2. **Timestamp capture** - the engine's ~1 Hz stats poll already watches the
+   STUN intercept counters (same signal that arms the H/A prompt). The first
+   counter jump records this phone's wall-clock call time; a fresh jump
+   after a 10 s quiet gap (new room) records again. Times reset with the
+   match session.
+3. **Exchange** - two new match-control-channel messages: `STUN|<epochMs>`
+   (sent when recorded and again at the H/A prompt) and `SWAP` (idempotent;
+   the reliable sender delivers three copies, so a flip is always exactly
+   one flip). Control channel only - never the gameplay port.
+4. **Suggestion card** - when both times qualify, the SIDE_CHOICES screen
+   shows one card, e.g. "Play HOME? You made the room - tap = lock, hold =
+   swap", coloured for the suggested side. Plain H/A buttons remain when
+   there is no suggestion.
+     - **Tap** (<400 ms) accepts the suggested side in one step. The lock
+       still waits for the peer's own tap (`pendingSuggestionConfirm`
+       completes only when the peer's complementary choice arrives), so a
+       card is never locked without a human tap on BOTH phones.
+     - **Hold** (>=400 ms) = the player disagrees: local roles reset, both
+       phones receive RESET + SWAP, both cards flip, each side taps once
+       again. Both phones holding independently still yields exactly one
+       flip - sides stay complementary (pinned by test).
+5. **Logs** - every computation prints the evidence
+   (`Side suggestion HOME (gap=127s swapped=false)`) so an export can check
+   the suggestion against the actual locked sides.
+
+The suggestion is advisory: nothing locks, nothing chooses without a tap,
+and the old manual H/A buttons are one step away whenever the evidence is
+missing or ambiguous. Still owed: one labelled match (who made the room,
+who ended up HOME) to confirm the on-device timing matches the exports.

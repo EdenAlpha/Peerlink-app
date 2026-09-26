@@ -42,6 +42,12 @@ object MatchControlChannel {
         fun onPeerRoleReset()
         fun onPeerTopology(topology: String)
         fun onPeerForfeit(reason: String)
+
+        /** Peer's first Konami matchmaking call (wall clock) — H/A suggestion input. */
+        fun onPeerStunTime(epochMs: Long)
+
+        /** Peer held the suggestion card: both sides flip (idempotent). */
+        fun onPeerSwap()
     }
 
     private val running = AtomicBoolean(false)
@@ -85,6 +91,16 @@ object MatchControlChannel {
     fun sendForfeit(reason: String) {
         val safe = reason.replace('|', '_').take(48)
         sendReliable("FORFEIT|$safe")
+    }
+
+    /** Wall-clock time of this phone's first matchmaking STUN — H/A suggestion input. */
+    fun sendStunTime(epochMs: Long) {
+        if (epochMs > 0L) sendReliable("STUN|$epochMs")
+    }
+
+    /** A hold on the suggestion card: the peer flips its suggestion too. */
+    fun sendSwap() {
+        sendReliable("SWAP")
     }
 
     private fun sendReliable(body: String) {
@@ -168,6 +184,8 @@ object MatchControlChannel {
             "RESET" -> listener?.onPeerRoleReset()
             "TOPO" -> listener?.onPeerTopology(parts.getOrNull(2).orEmpty())
             "FORFEIT" -> listener?.onPeerForfeit(parts.getOrNull(2).orEmpty().ifBlank { "peer_forfeit" })
+            "STUN" -> parts.getOrNull(2)?.toLongOrNull()?.let { listener?.onPeerStunTime(it) }
+            "SWAP" -> listener?.onPeerSwap()
         }
     }
 }

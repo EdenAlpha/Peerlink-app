@@ -42,6 +42,10 @@ object MatchMarkerOverlay {
     private var appContext: Context? = null
     private var mode: Mode = Mode.WAITING
     private var lastTapMs = 0L
+
+    /** Current H/A suggestion from SideSuggestion; null = plain H/A buttons. */
+    @Volatile
+    private var sideSuggestion: MatchControlChannel.Side? = null
     private var attentionAnimator: ObjectAnimator? = null
     private var conflictAnimator: ObjectAnimator? = null
 
@@ -210,6 +214,19 @@ object MatchMarkerOverlay {
         }
     }
 
+    /**
+     * Publish the (re)computed H/A suggestion. Skips the re-render when the
+     * value did not change, so a mid-press card is never yanked out from
+     * under the finger by a duplicate update.
+     */
+    fun showSideSuggestion(side: MatchControlChannel.Side?) {
+        main.post {
+            if (sideSuggestion == side) return@post
+            sideSuggestion = side
+            if (mode == Mode.SIDE_CHOICES) renderActions()
+        }
+    }
+
     fun showSelected(side: MatchControlChannel.Side) {
         setMode(if (side == MatchControlChannel.Side.HOME) Mode.HOME_SELECTED else Mode.AWAY_SELECTED)
     }
@@ -297,16 +314,21 @@ object MatchMarkerOverlay {
         when (mode) {
             Mode.WAITING -> Unit
             Mode.SIDE_CHOICES -> {
-                val h = button("H", "Choose Home", 0xFF245F50.toInt()) {
-                    MatchAutomationEngine.chooseLocalSide(MatchControlChannel.Side.HOME)
+                val suggestion = sideSuggestion
+                if (suggestion != null) {
+                    box.addView(sideSuggestionCard(app, suggestion))
+                } else {
+                    val h = button("H", "Choose Home", 0xFF245F50.toInt()) {
+                        MatchAutomationEngine.chooseLocalSide(MatchControlChannel.Side.HOME)
+                    }
+                    val a = button("A", "Choose Away", 0xFF334D73.toInt()) {
+                        MatchAutomationEngine.chooseLocalSide(MatchControlChannel.Side.AWAY)
+                    }
+                    box.addView(h, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                        marginEnd = dp(app, 10)
+                    })
+                    box.addView(a)
                 }
-                val a = button("A", "Choose Away", 0xFF334D73.toInt()) {
-                    MatchAutomationEngine.chooseLocalSide(MatchControlChannel.Side.AWAY)
-                }
-                box.addView(h, LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT).apply {
-                    marginEnd = dp(app, 10)
-                })
-                box.addView(a)
             }
             Mode.HOME_SELECTED -> box.addView(
                 button("H", "Confirm Home", 0xFF245F50.toInt()) {
@@ -319,6 +341,67 @@ object MatchMarkerOverlay {
                 }
             )
             Mode.FULL_TIME -> box.addView(whistleFtButton(app))
+        }
+    }
+
+    /**
+     * Suggestion card — the semi-automatic Home/Away picker.
+     *   tap  (<400 ms) — accept the suggested side (still needs the peer's own
+     *                    tap before the roles lock; nothing locks alone).
+     *   hold (≥400 ms) — the player disagrees: reset both phones and flip the
+     *                    suggestion on both, then each taps once again.
+     * Shown only when SideSuggestion has real evidence; otherwise the plain
+     * H/A buttons appear exactly as before.
+     */
+    private fun sideSuggestionCard(app: android.content.Context, side: MatchControlChannel.Side): TextView {
+        val isHome = side == MatchControlChannel.Side.HOME
+        return TextView(app).apply {
+            text = if (isHome) {
+                "Play HOME?\nYou made the room\ntap = lock · hold = swap"
+            } else {
+                "Play AWAY?\nYou joined the room\ntap = lock · hold = swap"
+            }
+            setTextColor(Color.WHITE)
+            textSize = 14f
+            gravity = Gravity.CENTER
+            minWidth = dp(app, 168)
+            minHeight = dp(app, 56)
+            setPadding(dp(app, 12), dp(app, 6), dp(app, 12), dp(app, 6))
+            contentDescription = if (isHome) {
+                "Suggested Home. Tap to lock, hold to swap sides"
+            } else {
+                "Suggested Away. Tap to lock, hold to swap sides"
+            }
+            background = GradientDrawable().apply {
+                setColor(if (isHome) 0xFF245F50.toInt() else 0xFF334D73.toInt())
+                cornerRadius = dp(app, 13).toFloat()
+            }
+        }.also { card ->
+            var downAt = 0L
+            card.setOnTouchListener { v, ev ->
+                when (ev.actionMasked) {
+                    MotionEvent.ACTION_DOWN -> {
+                        downAt = android.os.SystemClock.elapsedRealtime()
+                        v.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                        true
+                    }
+                    MotionEvent.ACTION_UP -> {
+                        val held = android.os.SystemClock.elapsedRealtime() - downAt
+                        if (held >= 400L) {
+                            v.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                            MatchAutomationEngine.swapSideSuggestion()
+                        } else {
+                            val now = android.os.SystemClock.elapsedRealtime()
+                            if (AppState.isRunning.get() && now - lastTapMs >= 220L) {
+                                lastTapMs = now
+                                MatchAutomationEngine.acceptSideSuggestion()
+                            }
+                        }
+                        true
+                    }
+                    else -> true
+                }
+            }
         }
     }
 
