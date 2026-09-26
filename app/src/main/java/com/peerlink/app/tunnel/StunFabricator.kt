@@ -9,6 +9,14 @@ import com.peerlink.app.core.AppState
  */
 object StunFabricator {
 
+    /**
+     * Kill-test toggle (CAPTURE_AUTOPSY §7.3 / VERDICT §3.1).
+     * true  = current behavior: answer game STUN locally with 197.x fabricated reflexive.
+     * false = passthrough: return null so real STUN goes to Konami (proves/disproves suspect #1 in one match).
+     * Flip from Settings or adb; default true so production behavior is unchanged.
+     */
+    @Volatile var fabricationEnabled: Boolean = true
+
     // ==================== CONSTANTS ====================
     
     private const val STUN_MAGIC_COOKIE = 0x2112A442
@@ -130,6 +138,7 @@ object StunFabricator {
         fabricatedPort: Int,
         vpnAddress: String
     ): ByteArray? {
+        if (!fabricationEnabled) return null
         try {
             val udpPayloadOffset = originalPacket.udpPayloadOffset
             val udpPayloadLength = originalPacket.udpPayloadLength
@@ -227,6 +236,7 @@ object StunFabricator {
         fabricatedIpv4: String,
         fabricatedPort: Int
     ): ByteArray? {
+        if (!fabricationEnabled) return null
         try {
             if (!isIpv6Stun(ipv6Packet, length)) return null
             val ipPayloadLength = read16(ipv6Packet, 4)
