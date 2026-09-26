@@ -1238,7 +1238,13 @@ private fun runWhistleProbeChain(ctx: Context): String {
             ?: return "Prime not reachable \u2014 activate Prime Mode first"
         val h = probe.header
         val sdk = h.optInt("sdk", -1)
-        val perm = h.optBoolean("audioRoutingPerm", false)
+        // audioRoutingPerm is only computed after the system context opens;
+        // before that point "false" would lie — show n/a instead.
+        val perm = if (h.has("audioRoutingPerm")) {
+            h.optBoolean("audioRoutingPerm", false).toString()
+        } else {
+            "n/a"
+        }
         if (!h.optBoolean("ok", false)) {
             val err = h.optString("error", "?") + " " + h.optString("detail", "")
             lastError = err
@@ -1260,6 +1266,9 @@ private fun runWhistleProbeChain(ctx: Context): String {
                 .onFailure { return "Could not save recording: ${it.message}" }
             return "Recorded ($label) \u2014 press \u25B6 to hear it"
         }
+    }
+    if (lastError.contains("no_system_context")) {
+        return "Prime could not start the audio tap: ${lastError.trim()}"
     }
     if (lastError.contains("no_audio_routing_permission")) {
         return "Shell audio permission missing \u2014 re-activate Prime Mode"

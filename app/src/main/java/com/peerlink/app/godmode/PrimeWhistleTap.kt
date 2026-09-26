@@ -7,6 +7,7 @@ import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioRecord
 import android.os.Build
+import android.os.Looper
 import android.os.Process
 import org.json.JSONObject
 
@@ -174,7 +175,7 @@ object PrimeWhistleTap {
 
     private fun openSession(variant: String, gamePackage: String, info: JSONObject): Session {
         if (Build.VERSION.SDK_INT < MIN_SDK) throw ProbeFailed("sdk_below_13", "sdk=${Build.VERSION.SDK_INT}")
-        val ctx = systemContext() ?: throw ProbeFailed("no_system_context")
+        val ctx = systemContext()
         info.put("audioRoutingPerm", hasAudioRoutingPermission(ctx))
         val gameUid = gameUid(ctx, gamePackage)
         info.put("gameUid", gameUid)
@@ -254,15 +255,58 @@ object PrimeWhistleTap {
      * app_process has no ApplicationInfo; the system Context is what
      * AudioPolicy.Builder needs for attribution. Same route as yume-chan's
      * reference implementation.
+     *
+     * TRAP (field finding, first device test): ActivityThread.systemMain()
+     * builds its H handler, which needs a Looper on the CALLING thread —
+     * prime_worker threads are bare (only PrimeServerMain's main thread has
+     * a looper, and that one belongs to a different thread). Without a
+     * Looper, systemMain throws, the old code swallowed the exception, and
+     * the app could only report the useless "no_system_context". Now: the
+     * calling thread gets its own Looper first, and a failure carries the
+     * real exception as detail so the next field report can be read.
      */
-    private fun systemContext(): Context? = runCatching {
-        val atCls = Class.forName("android.app.ActivityThread")
-        val activityThread = invokeByName(atCls, "systemMain") ?: return null
-        val fromMethod = runCatching { invokeByName(activityThread, "getSystemContext") }.getOrNull()
-        (fromMethod ?: runCatching {
-            atCls.getDeclaredField("mSystemContext").apply { isAccessible = true }.get(activityThread)
-        }.getOrNull()) as? Context
-    }.getOrNull()
+    private fun systemContext(): Context {
+        val errors = mutableListOf<String>()
+        if (Looper.myLooper() == null) {
+            runCatching { Looper.prepare() }
+                .onFailure { errors += "looper:${it.message}" }
+        }
+        // Some ROMs enforce hidden-API rules even in app_process; this
+        // greylist call unlocks ActivityThread reflection. Harmless when
+        // the ROM already allows it or blocks the call itself.
+        runCatching {
+            val vmCls = Class.forName("dalvik.system.VMRuntime")
+            val runtime = vmCls.getDeclaredMethod("getRuntime").invoke(null)
+            vmCls.getDeclaredMethod("setHiddenApiExemptions", Array<String>::class.java)
+                .invoke(runtime, arrayOf<String>(""))
+        }.onFailure { errors += "hidden-api:${it.message}" }
+        val first = runCatching {
+            val atCls = Class.forName("android.app.ActivityThread")
+            val thread = invokeByName(atCls, "systemMain") ?: error("systemMain=null")
+            extractSystemContext(atCls, thread) ?: error("mSystemContext missing")
+        }
+        first.getOrNull()?.let { return it }
+        first.exceptionOrNull()?.let { errors += it.toString() }
+        // systemMain may have installed the thread before a later step threw;
+        // a second pass can still reach the context it created.
+        val second = runCatching {
+            val atCls = Class.forName("android.app.ActivityThread")
+            val thread = invokeByName(atCls, "currentActivityThread")
+                ?: error("currentActivityThread=null")
+            extractSystemContext(atCls, thread) ?: error("mSystemContext missing")
+        }
+        second.getOrNull()?.let { return it }
+        second.exceptionOrNull()?.let { errors += it.toString() }
+        throw ProbeFailed("no_system_context", errors.joinToString(" | ").take(400))
+    }
+
+    private fun extractSystemContext(atCls: Class<*>, thread: Any): Context? =
+        (runCatching { invokeByName(thread, "getSystemContext") }.getOrNull()
+            ?: runCatching {
+                atCls.getDeclaredField("mSystemContext")
+                    .apply { isAccessible = true }
+                    .get(thread)
+            }.getOrNull()) as? Context
 
     private fun hasAudioRoutingPermission(ctx: Context): Boolean = runCatching {
         ctx.checkCallingOrSelfPermission(MODIFY_AUDIO_ROUTING) == PackageManager.PERMISSION_GRANTED

@@ -157,6 +157,10 @@ object MatchControlChannel {
                 }
                 if (!isExpectedPeer(packet.address)) continue
                 val text = String(packet.data, packet.offset, packet.length, StandardCharsets.UTF_8)
+                if (isDuplicateRx(text)) {
+                    AppState.appendFileOnly("[MATCH-CTRL] duplicate rx dropped: ${text.take(32)}")
+                    continue
+                }
                 handle(text)
             }
         } catch (e: Exception) {
@@ -165,6 +169,25 @@ object MatchControlChannel {
             if (socket === localSocket) socket = null
             runCatching { localSocket?.close() }
         }
+    }
+
+    // sendReliable transmits every message three times; without this filter
+    // one peer RESET arrives three times and resets the role state three
+    // times (seen in field logs as triple "Peer requested H/A reset").
+    // Exact duplicates inside the retransmission window are copies, not
+    // new state. Genuine repeats (re-send 90 s later) pass through.
+    private val recentRx = object : LinkedHashMap<String, Long>(8, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Long>): Boolean = size > 16
+    }
+
+    private fun isDuplicateRx(text: String): Boolean {
+        synchronized(recentRx) {
+            val now = System.currentTimeMillis()
+            recentRx.entries.removeIf { now - it.value > 2_000L }
+            if (recentRx.containsKey(text)) return true
+            recentRx[text] = now
+        }
+        return false
     }
 
     private fun isExpectedPeer(address: InetAddress): Boolean {

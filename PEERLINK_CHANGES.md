@@ -306,3 +306,43 @@ The suggestion is advisory: nothing locks, nothing chooses without a tap,
 and the old manual H/A buttons are one step away whenever the evidence is
 missing or ambiguous. Still owed: one labelled match (who made the room,
 who ended up HOME) to confirm the on-device timing matches the exports.
+
+## Field round 2026-09-26: whistle no_system_context root cause + control-rx dedup
+
+First field test of the suggestion card and the whistle tap (two exports,
+02:24-02:58, both phones on the new APK). Findings and fixes:
+
+1. **Whistle: `no_system_context` on both phones (12-13 attempts, probe and
+   FT hold alike).** Root cause: `ActivityThread.systemMain()` builds its
+   `H` handler, which needs a Looper on the CALLING thread — but audio
+   commands run on `prime_worker` threads (accept loop spawns one per
+   connection) which are bare; only `PrimeServerMain`'s main thread has a
+   looper. systemMain threw, the old `runCatching { ... }.getOrNull()`
+   swallowed the exception, and the app could only report the useless
+   `no_system_context`. Fixes in `PrimeWhistleTap.systemContext()`:
+   prepare a thread Looper first; attempt the standard
+   `VMRuntime.setHiddenApiExemptions` unlock (harmless if blocked); retry
+   via `currentActivityThread` if systemMain partially installed the
+   thread; and NEVER swallow — the real exception chain now travels as
+   `detail` into the log and the Settings message. Settings also stopped
+   reporting `perm=false` before the permission was ever checked (shows
+   `n/a` now) and gives a real sentence for this failure instead of the
+   misleading "only silence came through".
+2. **Control channel: one RESET processed three times.** `sendReliable`
+   sends each message at 0/60/140 ms; the peer handled all three copies
+   (field logs: three "Peer requested H/A reset" + three
+   "H/A selection requested" within 6 ms). `receiveLoop` now drops exact
+   duplicates inside a 2 s window (retransmission copies), while genuine
+   re-sends ~90 s apart still pass. Also silences the triple
+   "Peer matchmaking call time received" noise.
+3. **Suggestion card: no card shown — correctly.** The exchange worked
+   end-to-end on both phones (times delivered in under a second, logged on
+   both sides), but the two first-call times were only 12.3 s apart —
+   below the 45 s threshold — so no guess was made and manual H/A was
+   used (locked complementary, AWAY/HOME). Tonight's STUN keepalives run
+   every ~5 s from online-stack start (~90 s before the H/A prompt), so
+   "first call" measures who entered online first, not directly who
+   created the room; with a 12 s gap the order cannot be trusted (clock
+   skew is well under a second — the order was real, but "who was first"
+   still needs labelling before the threshold moves). Pending question:
+   who created tonight's room?

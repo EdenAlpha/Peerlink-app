@@ -447,8 +447,11 @@ object MatchMarkerOverlay {
                             AppState.appendLog("[WHISTLE] hold recording started")
                         } else {
                             ftRecording = false
+                            val reason = resp?.optString("error") ?: "Prime unreachable"
+                            val detail = resp?.optString("detail").orEmpty()
                             AppState.appendLog(
-                                "[WHISTLE] hold start failed: ${resp?.optString("error") ?: "Prime unreachable"}",
+                                "[WHISTLE] hold start failed: $reason" +
+                                    if (detail.isNotEmpty()) ": $detail" else "",
                             )
                         }
                     }
