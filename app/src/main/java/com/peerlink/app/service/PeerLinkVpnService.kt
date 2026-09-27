@@ -21,6 +21,7 @@ import com.peerlink.app.godmode.GodModeManager
 import com.peerlink.app.network.LanPathResolver
 import com.peerlink.app.network.LanPath
 import com.peerlink.app.network.GameplayPathPolicy
+import com.peerlink.app.network.LowLatencyLock
 import com.peerlink.app.tunnel.NativeBackendConfig
 import com.peerlink.app.tunnel.NativeBackendStats
 import com.peerlink.app.tunnel.NativePeerLinkBackend
@@ -564,14 +565,19 @@ class PeerLinkVpnService : VpnService() {
                 canonicalTransportMode() == "wifi_udp") {
                 try {
                     val wm = applicationContext.getSystemService(WIFI_SERVICE) as android.net.wifi.WifiManager
-                    wifiLowLatencyLock = wm.createWifiLock(
+                    val lock = wm.createWifiLock(
                         android.net.wifi.WifiManager.WIFI_MODE_FULL_LOW_LATENCY,
                         "LanLink:LowLatency"
-                    ).apply {
-                        setReferenceCounted(false)
-                        acquire()
-                    }
-                    AppState.appendLog("[VPN-START ] WIFI_MODE_FULL_LOW_LATENCY requested; effectiveness depends on foreground state and device support")
+                    ).apply { setReferenceCounted(false) }
+                    val gameUid = LowLatencyLock.attachGame(lock, packageManager)
+                    lock.acquire()
+                    wifiLowLatencyLock = lock
+                    AppState.appendLog(
+                        if (gameUid > 0)
+                            "[VPN-START ] Low-latency lock attributed to eFootball uid=$gameUid (Wi-Fi power-save off while game is foreground)"
+                        else
+                            "[VPN-START ] Low-latency lock default attribution (game missing or refused)"
+                    )
                 } catch (e: Exception) {
                     AppState.appendLog("[VPN-START ] Wi-Fi low-latency lock failed: ${e.message}")
                 }
