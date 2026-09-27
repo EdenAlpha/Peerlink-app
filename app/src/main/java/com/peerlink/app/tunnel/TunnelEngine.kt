@@ -9,6 +9,7 @@ import android.system.Os
 import android.system.OsConstants
 import com.peerlink.app.core.AppState
 import com.peerlink.app.core.PrimeGameplayTracker
+import com.peerlink.app.network.LowLatencyLock
 import com.peerlink.app.service.CallMonitorService
 import java.io.FileInputStream
 import java.io.FileOutputStream
@@ -1402,7 +1403,13 @@ class TunnelEngine(
             
             wifiLock = wifiManager.createWifiLock(lockMode, "PeerLink:TunnelWifiLock")
             wifiLock?.setReferenceCounted(false)
+            val gameUid = wifiLock?.let { LowLatencyLock.attachGame(it, context.packageManager) } ?: -1
             wifiLock?.acquire()
+            if (gameUid > 0) {
+                debugLog("PeerLink", "low-latency lock attributed to eFootball uid=$gameUid (power-save off while game is foreground)")
+            } else {
+                debugLog("PeerLink", "low-latency lock default attribution (game missing or refused)")
+            }
             debugLog("ðŸš€ ENGINE", "âš¡ WiFi $modeName lock acquired (mode=$lockMode)")
             
             try {

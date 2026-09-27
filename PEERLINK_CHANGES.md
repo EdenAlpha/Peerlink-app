@@ -346,3 +346,17 @@ First field test of the suggestion card and the whistle tap (two exports,
    skew is well under a second — the order was real, but "who was first"
    still needs labelling before the threshold moves). Pending question:
    who created tonight's room?
+
+## eFootball-uid low-latency WifiLock (rootless, Android 14/15)
+
+Both phones confirmed Android 14/15. New LowLatencyLock.attachGame() sets
+eFootball's uid (jp.konami.pesam) on PeerLink's two WIFI_MODE_FULL_LOW_LATENCY
+locks (PeerLinkVpnService VPN start, TunnelEngine) BEFORE cquire(). On
+Android 10+ the framework checks only WAKE_LOCK and takes the WorkSource as-is,
+so the low-latency watch list evaluates the GAME's foreground importance
+(=100 during a match) instead of PeerLink's (a foreground service), which is
+what actually disables Wi-Fi power save. Android 8/9 keep today's behavior
+(they gate a non-empty WorkSource behind UPDATE_DEVICE_STATS, which would
+throw). All failures fall back to the default attribution. No manifest change
+(WAKE_LOCK + <queries> already present). Source-verified against AOSP 10-15;
+the android-27 UPDATE_DEVICE_STATS gate confirmed for 8/9 only.
