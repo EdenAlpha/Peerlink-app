@@ -73,9 +73,18 @@ constexpr size_t kFlowLogWordCount = kFlowLogBitCount / 64;
 // F23: the legacy six-stage timing trace duplicated packet-path work and
 // allocated a large ring. Full-fidelity PCAPNG capture supersedes it.
 // F24: compact timing/metadata trace only. No packet payload bytes are retained.
-// 32768 six-stage events is enough for the end-of-match analysis window while
-// keeping the ring much smaller than the old 131072-event diagnostic build.
-constexpr size_t kUdpTraceCapacity = 32768;
+//
+// 2026-09-26 match run: the session wrote 228393 events but the ring held only
+// 32768, so `overwritten=195625` and the retained window was just the last
+// ~4.8 minutes (02:53:40-02:57:17). All three peer stalls
+// (02:34:48 / 02:37:15 / 02:45:53 ms-resolution packets) were overwritten, which
+// is precisely the window needed to measure `now - last_activity` against the
+// compiled MatchOnlineWatchDog thresholds (10/30/60/90/120/180/300 ms).
+//
+// A match runs ~34 min at ~6800 events/min, so 262144 events covers a full
+// session plus menus (~39 min) at ~27 MiB resident. Diagnostic-only cost; do
+// not shrink it below the session length or the stall window is lost again.
+constexpr size_t kUdpTraceCapacity = 262144;
 // Keep verbose per-flow/action text diagnostics disabled; the CSV timing ring
 // is the only packet-level diagnostic enabled in this build.
 constexpr bool kPacketDiagnosticsEnabled = false;
