@@ -3628,9 +3628,23 @@ Java_com_peerlink_app_tunnel_NativePeerLinkBackend_nativeStart(
     state->mtu = mtu > 0 ? mtu : 1400;
     state->sender_id = static_cast<int>(monotonic_ns() & 0x7FFFFFFF);
     state->last_keepalive_sent_ns.store(monotonic_ns(), std::memory_order_release);
-    state->udp_trace_capacity = kUdpTraceCapacity;
-    if (state->udp_trace_capacity > 0) {
-        state->udp_trace_buffer = std::unique_ptr<UdpTraceEvent[]>(new UdpTraceEvent[state->udp_trace_capacity]());
+    // F24-TRACE ring. Prefer the match-length ring, but degrade instead of
+    // terminating the VPN: this allocation is ~27 MiB at 262144 events, and a
+    // plain `new` throws std::bad_alloc straight out of a JNI boundary with no
+    // catch anywhere on this path. The raw capture rings already use
+    // std::nothrow (lines ~847-848); this one now does too, plus fallbacks so a
+    // memory-pressured device still records *some* trace. On total failure
+    // capacity stays 0 and tracing is simply off -- never a crash.
+    static const size_t kUdpTraceCapacityFallbacks[] = {
+        kUdpTraceCapacity, 131072, 65536, 32768, 0,
+    };
+    for (const size_t cap : kUdpTraceCapacityFallbacks) {
+        if (cap == 0) break;
+        std::unique_ptr<UdpTraceEvent[]> buf(new (std::nothrow) UdpTraceEvent[cap]());
+        if (!buf) continue;
+        state->udp_trace_buffer = std::move(buf);
+        state->udp_trace_capacity = cap;
+        break;
     }
 
     const std::string peer_lan_ip_str = jstring_to_string(env, peer_lan_ip);
