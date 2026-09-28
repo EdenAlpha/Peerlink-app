@@ -1473,9 +1473,6 @@ fun PrimeSetupScreen(
             if (GodModeManager.actionFeedback.value.changedAtMs == stamp) GodModeManager.clearActionFeedback()
         }
     }
-    var pairingInput by remember { mutableStateOf(TextFieldValue("")) }
-    var pairingResult by remember { mutableStateOf("") }
-    var pairingResultOk by remember { mutableStateOf<Boolean?>(null) }
     var showForgetConfirm by remember { mutableStateOf(false) }
     var shellInput by remember { mutableStateOf(TextFieldValue("pm disable-user --user 0 com.transsion.phonemaster")) }
     var shellOutput by remember { mutableStateOf("") }
@@ -1533,7 +1530,7 @@ fun PrimeSetupScreen(
             PrimeSetupStep(
                 "1",
                 "Open Wireless Debugging",
-                "Turn Wireless Debugging ON, then choose “Pair device with pairing code”. Return here with the six-digit code. Android 11 or newer is required.",
+                "Turn Wireless Debugging ON, then choose “Pair device with pairing code”. Android 11 or newer is required.",
             ) {
                 GhostBtn("Open Developer Options", Icons.Rounded.Settings) {
                     GodModeManager.openWirelessDebuggingSettings(ctx)
@@ -1551,7 +1548,7 @@ fun PrimeSetupScreen(
             PrimeSetupStep(
                 "2",
                 if (pairingBusy) "PeerLink is watching for the pairing port" else "Start the pairing watcher",
-                "Start this before opening the pairing-code dialog. The watcher and Developer Options button stay available until setup finishes.",
+                "Start this first, then open the pairing-code dialog on your phone. The code goes into the PeerLink notification — there is nothing to type here, so allow notifications.",
             ) {
                 GhostBtn(
                     when (state) {
@@ -1566,7 +1563,7 @@ fun PrimeSetupScreen(
                 Spacer(Modifier.height(7.dp))
                 Text(
                     when {
-                        GodModeManager.isPairingPortReady -> "Pairing endpoint detected — enter the 6-digit code below."
+                        GodModeManager.isPairingPortReady -> "Ready. Type the 6-digit code in the PeerLink notification."
                         pairingBusy -> "Waiting for Android's pairing endpoint."
                         else -> "Not watching yet. Start it, then open the pairing-code dialog on your phone."
                     },
@@ -1574,70 +1571,6 @@ fun PrimeSetupScreen(
                     color = if (GodModeManager.isPairingPortReady) PL.green else PL.muted,
                     lineHeight = 15.sp,
                 )
-            }
-
-            PrimeSetupStep(
-                "3",
-                "Enter the pairing code",
-                "Type the six digits Android shows you. PeerLink fills in the rest.",
-            ) {
-                Box(
-                    Modifier.fillMaxWidth().clip(RoundedCornerShape(11.dp))
-                        .background(PL.elevated)
-                        .border(1.dp, if (pairingInput.text.isNotBlank()) PL.gold.copy(alpha = 0.55f) else PL.line, RoundedCornerShape(11.dp))
-                        .padding(horizontal = 12.dp, vertical = 11.dp),
-                ) {
-                    BasicTextField(
-                        value = pairingInput,
-                        onValueChange = { value ->
-                            val filtered = value.text.filter { it.isDigit() }.take(6)
-                            pairingInput = value.copy(text = filtered, selection = androidx.compose.ui.text.TextRange(filtered.length))
-                            pairingResult = ""
-                            pairingResultOk = null
-                        },
-                        singleLine = true,
-                        textStyle = androidx.compose.ui.text.TextStyle(
-                            color = PL.ink,
-                            fontSize = 16.sp,
-                            fontWeight = FontWeight.Bold,
-                            fontFamily = FontFamily.Monospace,
-                            letterSpacing = 1.sp,
-                        ),
-                        cursorBrush = SolidColor(PL.gold),
-                        modifier = Modifier.fillMaxWidth(),
-                        decorationBox = { inner ->
-                            Box {
-                                if (pairingInput.text.isEmpty()) {
-                                    Text("123456", color = PL.muted, fontSize = 13.sp)
-                                }
-                                inner()
-                            }
-                        },
-                    )
-                }
-                Spacer(Modifier.height(8.dp))
-                GhostBtn(
-                    if (state == GodModeManager.State.PAIRING) "Pairing…" else "Pair this phone",
-                    Icons.Rounded.Link,
-                    enabled = pairingInput.text.isNotBlank() && state != GodModeManager.State.PAIRING && !activationBusy && !isActive,
-                ) {
-                    GodModeManager.submitPairingInput(pairingInput.text) { success, message ->
-                        mainHandler.post {
-                            pairingResultOk = success
-                            pairingResult = message
-                            if (success) pairingInput = TextFieldValue("")
-                        }
-                    }
-                }
-                if (pairingResult.isNotBlank()) {
-                    Spacer(Modifier.height(7.dp))
-                    Text(
-                        pairingResult,
-                        fontSize = 10.5.sp,
-                        color = if (pairingResultOk == true) PL.green else PL.red,
-                        lineHeight = 15.sp,
-                    )
-                }
             }
 
             if (isPaired) {

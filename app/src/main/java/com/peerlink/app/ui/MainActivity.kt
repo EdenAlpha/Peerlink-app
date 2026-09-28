@@ -669,17 +669,15 @@ class MainActivity : AppCompatActivity(), NsdDiscovery.NsdCallback {
                 if (granted) {
                     pendingNotificationAction?.invoke()
                 } else {
-                    // Android allows a foreground service to run even when its
-                    // notification is hidden by POST_NOTIFICATIONS. Continue the
-                    // pairing watcher and direct the user to the in-app code box.
-                    // Refusing to start here made Prime setup impossible after a
-                    // notification denial even though notification access is not a
-                    // technical requirement for local ADB pairing.
-                    AppState.appendLog("[PRIME-MODE ] Notification permission denied — using in-app pairing entry")
-                    pendingNotificationAction?.invoke()
+                    // The pairing code is entered in the PeerLink notification,
+                    // so the watcher cannot finish without notifications. Do not
+                    // start a flow that can only dead-end: tell the user exactly
+                    // what to turn on instead of pointing at a code box that no
+                    // longer exists.
+                    AppState.appendLog("[PRIME-MODE ] Notification permission denied - pairing needs the PeerLink notification")
                     Toast.makeText(
                         this,
-                        "Notification is off — return to PeerLink and enter the code in the app",
+                        "Turn on notifications to pair. The pairing code is typed in the PeerLink notification.",
                         Toast.LENGTH_LONG,
                     ).show()
                 }

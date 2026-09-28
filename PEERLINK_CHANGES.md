@@ -403,3 +403,24 @@ the android-27 UPDATE_DEVICE_STATS gate confirmed for 8/9 only.
 - NOTE: "Prime Memory" (Instant Vault / Memory Cannon) was deliberately KEPT.
   It is a different feature from the removed "Priority" keep-game-in-RAM
   toggle, and it still works.
+
+## Prime pairing: code entry is notification-only
+
+Step 3 of the Prime setup wizard (the six-digit code box) is gone. Setup is
+now two steps and there is no pairing code field anywhere in the app.
+
+Verified the notification path is self-sufficient before removing the box:
+GodModePairingService posts a RemoteInput action labelled "6-digit pairing
+code" and the dynamically registered pinReceiver feeds the value straight into
+GodModeManager.submitPairingInput, so pairing completes from the notification
+alone. The service's own PORT:CODE notification fallback is kept on purpose -
+if Android's mDNS auto-detect times out the port is genuinely required, and a
+six-digit code alone would not pair.
+
+Dead end closed: with the in-app box gone, a denied POST_NOTIFICATIONS meant
+the watcher started but could never finish, while the toast still told the
+user to "return to PeerLink and enter the code in the app". MainActivity now
+refuses to start the doomed watcher and says notifications must be on, because
+the notification is now the only place the code can be entered.
+
+Removed the now-unused pairingInput/pairingResult/pairingResultOk state.
