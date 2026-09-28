@@ -240,7 +240,6 @@ fun PeerLinkScreen(
     }
 
     var name by rememberSaveable { mutableStateOf(prefs.getString("username", "") ?: "") }
-    var drawerOpen by remember { mutableStateOf(false) }
     var adminOpen by remember { mutableStateOf(false) }
     var adminUnlockOpen by remember { mutableStateOf(false) }
 
@@ -262,8 +261,8 @@ fun PeerLinkScreen(
         Toast.LENGTH_SHORT,
     ).show()
 
-    val pager = rememberPagerState(pageCount = { 2 })
-    BackHandler(drawerOpen || adminOpen) { drawerOpen = false; adminOpen = false }
+    val pager = rememberPagerState(pageCount = { 3 })
+    BackHandler(adminOpen) { adminOpen = false }
 
     Box(Modifier.fillMaxSize().background(PL.bg)) {
         Column(Modifier.fillMaxSize().statusBarsPadding().imePadding()) {
@@ -302,51 +301,47 @@ fun PeerLinkScreen(
                         else {
                             when (key) {
                                 "shield" -> GodModeManager.setAirplaneShieldEnabled(want)
-                                "ram" -> GodModeManager.setKeepGameInRam(want)
                                 "calls" -> actions.setCallBlock(want)
-                                "auto" -> GodModeManager.setAutoConnectEnabled(want)
                             }; true
                         }
                     },
                     callBlockOn = actions.callBlockEnabled(),
                     ctx = ctx
-                ) else CoinPage()
+                ) else if (page == 1) CoinPage() else SettingsPage(
+                    primeReady = primeReady,
+                    primeActive = primeActive,
+                    onSetupPrime = actions.onSetupPrimeMode,
+                    onBatterySettings = actions.openBatterySettings,
+                    onExportLogs = actions.exportMatchLogs,
+                    onMatchMarker = actions.setMatchMarker,
+                    ctx = ctx,
+                )
             }
             NavigationBar(containerColor = PL.elevated, tonalElevation = 0.dp) {
                 NavigationBarItem(
-                    selected = pager.currentPage == 0 && !drawerOpen,
+                    selected = pager.currentPage == 0,
                     onClick = { uiScope.launch { pager.animateScrollToPage(0) } },
                     icon = { Icon(Icons.Rounded.SportsEsports, null) }, label = { Text("Play") },
                     colors = peerNavigationColors(),
                 )
                 NavigationBarItem(
-                    selected = pager.currentPage == 1 && !drawerOpen,
+                    selected = pager.currentPage == 1,
                     onClick = { uiScope.launch { pager.animateScrollToPage(1) } },
                     icon = { Icon(Icons.Rounded.BarChart, null) }, label = { Text("Activity") },
                     colors = peerNavigationColors(),
                 )
                 NavigationBarItem(
-                    selected = drawerOpen, onClick = { drawerOpen = true },
+                    selected = pager.currentPage == 2,
+                    onClick = { uiScope.launch { pager.animateScrollToPage(2) } },
                     icon = { Icon(Icons.Rounded.Tune, null) }, label = { Text("Settings") },
                     colors = peerNavigationColors(),
                 )
             }
         }
 
-        if (drawerOpen || adminOpen) Box(Modifier.fillMaxSize().background(Color(0xCC000000)).clickable(
-            indication = null, interactionSource = null) { drawerOpen = false; adminOpen = false })
+        if (adminOpen) Box(Modifier.fillMaxSize().background(Color(0xCC000000)).clickable(
+            indication = null, interactionSource = null) { adminOpen = false })
 
-        SidePanel(drawerOpen, true, { drawerOpen = false }) {
-            SettingsMenu(
-                primeReady = primeReady,
-                primeActive = primeActive,
-                onSetupPrime = { drawerOpen = false; actions.onSetupPrimeMode() },
-                onBatterySettings = actions.openBatterySettings,
-                onExportLogs = actions.exportMatchLogs,
-                onMatchMarker = actions.setMatchMarker,
-                ctx = ctx,
-            )
-        }
         SidePanel(adminOpen, false, { adminOpen = false }) { AdminMenu(ctx, actions) }
 
         if (adminUnlockOpen) AdminUnlockDialog(onClose = { adminUnlockOpen = false }) { entered ->
@@ -678,20 +673,14 @@ private fun DisconnectCard(peerName: String, onDisconnect: () -> Unit) {
     ctx: Context,
 ) {
     val gm = GodModeManager
-    // Fixed: Auto mode now properly reads its state from prefs
-    var autoOn by remember { mutableStateOf(gm.isAutoConnectEnabled()) }
     val tools = listOf(
         Tool("shield", "Shield", Icons.Rounded.Shield),
-        Tool("ram", "Priority", Icons.Rounded.Memory),
-        Tool("calls", "No Calls", Icons.Rounded.PhoneDisabled),
-        Tool("auto", "Auto", Icons.Rounded.Autorenew)
+        Tool("calls", "No Calls", Icons.Rounded.PhoneDisabled)
     )
-    val states = remember(primeReady, primeActive, callBlockOn, autoOn) {
+    val states = remember(primeReady, primeActive, callBlockOn) {
         mutableStateMapOf(
             "shield" to gm.isAirplaneShieldEnabled(),
-            "ram" to gm.getKeepGameInRam(),
-            "calls" to callBlockOn,
-            "auto" to autoOn
+            "calls" to callBlockOn
         )
     }
     val fontScale = LocalDensity.current.fontScale
@@ -706,15 +695,12 @@ private fun DisconnectCard(peerName: String, onDisconnect: () -> Unit) {
                         val enabled = primeReady && (t.key == "calls" || !primeActive)
                         val tint = when (t.key) {
                             "shield" -> PL.indigo
-                            "calls" -> PL.red
-                            "ram" -> PL.green
-                            else -> PL.gold
+                            else -> PL.red
                         }
                         Row(Modifier.weight(1f).clip(RoundedCornerShape(16.dp))
                             .toggleable(value = selected, enabled = enabled, role = Role.Switch) { want ->
                                 if (onToggle(t.key, want)) {
                                     states[t.key] = want
-                                    if (t.key == "auto") autoOn = want
                                 }
                             }.heightIn(min = 68.dp).padding(vertical = 8.dp),
                             verticalAlignment = Alignment.CenterVertically,
@@ -1054,8 +1040,9 @@ private fun statLabel(name: String): String = when (name) {
         }
     }
 }
-
-@Composable private fun SettingsMenu(
+/* ─── Settings: a real page now, same rhythm as the Activity page ─── */
+@Composable
+private fun SettingsPage(
     primeReady: Boolean,
     primeActive: Boolean,
     onSetupPrime: () -> Unit,
@@ -1073,59 +1060,74 @@ private fun statLabel(name: String): String = when (name) {
         }
     }
     var open by remember { mutableStateOf(-1) }
-    Text("Settings", fontSize = 22.sp, fontWeight = FontWeight.ExtraBold, color = PL.ink, modifier = Modifier.padding(bottom = 14.dp, start = 4.dp))
-    GhostBtn("Export match diagnostics", Icons.Rounded.Download) { onExportLogs() }
-    Spacer(Modifier.height(10.dp))
-    Row(Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-        Column(Modifier.weight(1f)) {
-            Text("Match markers", color = PL.ink, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-            Text("Home / Away marker while playing", color = PL.muted, fontSize = 12.sp)
-        }
-        Switch(checked = markerEnabled, onCheckedChange = {
-            markerEnabled = it; onMatchMarker(it)
-        })
-    }
-    Spacer(Modifier.height(10.dp))
-    Acc(0, open, "Settings", "Tools, blocking & Prime setup", Icons.Rounded.Tune, { open = if (open == 0) -1 else 0 }) {
-        Para("Keep both phones on the same Wi-Fi or hotspot. If a match feels delayed, save the connection logs after playing so the timing on each phone can be checked.")
-        Spacer(Modifier.height(6.dp))
-        GhostBtn(
-            when {
-                primeActive -> "Manage Prime Mode"
-                primeReady -> "Activate Prime Mode"
-                else -> "Set up Prime Mode"
-            },
-            Icons.Rounded.AutoAwesome,
-        ) { onSetupPrime() }
-        Spacer(Modifier.height(8.dp))
-        GhostBtn("Battery protection settings", Icons.Rounded.BatterySaver) {
-            onBatterySettings()
-        }
-    }
-    Acc(
-        1,
-        open,
-        when {
-            primeActive -> "Prime Mode · Active"
-            primeReady -> "Prime Mode · Ready"
-            else -> "Prime Mode · Not set up"
-        },
-        "What it does & every feature",
-        Icons.Rounded.Bolt,
-        { open = if (open == 1) -1 else 1 },
+    Column(
+        Modifier.fillMaxSize().padding(horizontal = 20.dp).verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        Para("Prime Mode unlocks verified controls during a match. Pair once, configure the tools, then activate Prime Mode.")
-        Feat("Shield", "Mis-tap airplane mode mid-match? Only data drops \u2014 your link survives.")
-        Feat("Game Priority", "Reduces Doze and standby restrictions. Android does not let a non-root app pin another game permanently in RAM.")
-        Feat("No Calls", "Silently rejects calls only while you're playing.")
-        Feat("Auto", "When Prime is ready, turns Wi-Fi on silently. PeerLink never turns it off automatically.")
-    }
-    Acc(2, open, "Rewards", "How PeerCoins work", Icons.Rounded.Stars, { open = if (open == 2) -1 else 2 }) {
-        Para("You earn PeerCoins by playing and winning matches over PeerLink.")
-        Para("Goal difference sweetens it \u2014 beat your rival by more, earn more.")
-    }
-    Acc(3, open, "Whistle sounds", "Record & play the final whistle", Icons.Rounded.GraphicEq, { open = if (open == 3) -1 else 3 }) {
-        WhistleSoundsBody(ctx)
+        Spacer(Modifier.height(4.dp))
+        Text("Settings", color = PL.ink, fontSize = 28.sp, fontWeight = FontWeight.Bold, letterSpacing = (-0.5).sp)
+        Text("Everything here is optional. Matches work the same without any of it.", color = PL.inkSoft, fontSize = 14.sp)
+        Spacer(Modifier.height(2.dp))
+
+        SectionTitle("Prime Mode")
+        DarkCard {
+            GhostBtn(
+                when {
+                    primeActive -> "Prime Mode is on"
+                    primeReady -> "Turn Prime Mode on"
+                    else -> "Set up Prime Mode"
+                },
+                Icons.Rounded.AutoAwesome,
+            ) { onSetupPrime() }
+            Spacer(Modifier.height(10.dp))
+            Text(
+                when {
+                    primeActive -> "Running now. It keeps your connection steady while you play."
+                    primeReady -> "Ready to go. Turn it on before your next match."
+                    else -> "Pair once, then it can guard your connection during matches."
+                },
+                fontSize = 12.5.sp, color = PL.inkSoft, lineHeight = 19.sp,
+            )
+            Spacer(Modifier.height(12.dp))
+            Feat("Airplane-mode shield", "A mis-tap will not drop your link.")
+            Feat("Call blocking", "Calls are ignored only while you are playing.")
+            Spacer(Modifier.height(4.dp))
+            GhostBtn("Battery protection", Icons.Rounded.BatterySaver) { onBatterySettings() }
+            Spacer(Modifier.height(6.dp))
+            Text("Stops Android from putting PeerLink to sleep mid-match.", fontSize = 12.sp, color = PL.muted, lineHeight = 17.sp)
+        }
+
+        SectionTitle("While you play")
+        DarkCard {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Match markers", color = PL.ink, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                    Text("Shows which side you are on", color = PL.muted, fontSize = 12.sp)
+                }
+                Switch(checked = markerEnabled, onCheckedChange = { markerEnabled = it; onMatchMarker(it) })
+            }
+            Spacer(Modifier.height(6.dp))
+            Acc(3, open, "Whistle sounds", "Record and play the final whistle", Icons.Rounded.GraphicEq, { open = if (open == 3) -1 else 3 }) {
+                WhistleSoundsBody(ctx)
+            }
+        }
+
+        SectionTitle("Your coins")
+        DarkCard {
+            Text(
+                "You earn PeerCoins by playing and winning over PeerLink. Beating your rival by more earns more. " +
+                    "Only matches verified from the eFootball result screen count.",
+                fontSize = 12.5.sp, color = PL.inkSoft, lineHeight = 19.sp,
+            )
+        }
+
+        SectionTitle("Help")
+        DarkCard {
+            GhostBtn("Export match diagnostics", Icons.Rounded.Download) { onExportLogs() }
+            Spacer(Modifier.height(6.dp))
+            Text("Saves a copy of the match log you can share if something looks wrong.", fontSize = 12.sp, color = PL.muted, lineHeight = 17.sp)
+        }
+        Spacer(Modifier.height(4.dp))
     }
 }
 
@@ -1565,8 +1567,8 @@ fun PrimeSetupScreen(
                 Text(
                     when {
                         GodModeManager.isPairingPortReady -> "Pairing endpoint detected — enter the 6-digit code below."
-                        pairingBusy -> "Waiting for Android's pairing endpoint. You can still enter PORT:CODE manually."
-                        else -> "Not watching yet. Manual PORT:CODE remains available if automatic detection is blocked."
+                        pairingBusy -> "Waiting for Android's pairing endpoint."
+                        else -> "Not watching yet. Start it, then open the pairing-code dialog on your phone."
                     },
                     fontSize = 10.5.sp,
                     color = if (GodModeManager.isPairingPortReady) PL.green else PL.muted,
@@ -1577,7 +1579,7 @@ fun PrimeSetupScreen(
             PrimeSetupStep(
                 "3",
                 "Enter the pairing code",
-                "Enter six digits after automatic detection. If detection fails, enter PORT:CODE, for example 45678:123456.",
+                "Type the six digits Android shows you. PeerLink fills in the rest.",
             ) {
                 Box(
                     Modifier.fillMaxWidth().clip(RoundedCornerShape(11.dp))
@@ -1588,7 +1590,7 @@ fun PrimeSetupScreen(
                     BasicTextField(
                         value = pairingInput,
                         onValueChange = { value ->
-                            val filtered = value.text.filter { it.isDigit() || it == ':' }.take(12)
+                            val filtered = value.text.filter { it.isDigit() }.take(6)
                             pairingInput = value.copy(text = filtered, selection = androidx.compose.ui.text.TextRange(filtered.length))
                             pairingResult = ""
                             pairingResultOk = null
@@ -1606,7 +1608,7 @@ fun PrimeSetupScreen(
                         decorationBox = { inner ->
                             Box {
                                 if (pairingInput.text.isEmpty()) {
-                                    Text("123456 or 45678:123456", color = PL.muted, fontSize = 13.sp)
+                                    Text("123456", color = PL.muted, fontSize = 13.sp)
                                 }
                                 inner()
                             }
@@ -1946,7 +1948,6 @@ fun PrimeSetupScreen(
                     Spacer(Modifier.height(9.dp))
                     PrimeInfoLine("Rule #1", "PeerLink packet path stays protected")
                     PrimeInfoLine("Rule #2", "Meet 30/60 FPS smoothly before reducing quality")
-                    PrimeInfoLine("Rule #3", "Unsupported Android/OEM controls stay hidden")
                 }
             }
 

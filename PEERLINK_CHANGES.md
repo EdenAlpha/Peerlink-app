@@ -374,3 +374,32 @@ the android-27 UPDATE_DEVICE_STATS gate confirmed for 8/9 only.
 - Removed the "Scanning the local link continuously" line from the main UI.
   The discovery message slot now renders only when there is a real result
   ("1 player found") or a real problem, so no blank gap is left behind.
+
+## UI: Settings becomes a real page; Priority and Auto removed
+
+- Settings is now the third pager page (Play / Activity / Settings) instead of
+  a side panel. The top gear still opens the admin panel sliding from the
+  right, as before.
+- Settings rewritten to match the Activity page rhythm: 28sp page title, short
+  plain-sentence subtitles, and four labelled groups (Prime Mode / While you
+  play / Your coins / Help). Removed the nested "Settings inside Settings"
+  accordion that carried the dense instructions.
+- Removed the "Priority" and "Auto" tools from the Prime Deck and the
+  onToolToggle branches that drove them.
+- CRITICAL: the two features were also switched off at the source, not just
+  hidden. isAutoConnectEnabled() defaulted to TRUE and was consumed silently
+  on every Prime activation, so removing the button alone would have left it
+  running with no way to see or stop it. getKeepGameInRam() and
+  isAutoConnectEnabled() now both return false, and the setters force the
+  stored prefs to false - matching the existing forced-off pattern already
+  used for the captive-portal and 5GHz legacy toggles in the same block.
+- Removed "Rule #3" from the Prime Auto Tuner card (single occurrence, no
+  other references).
+- Prime pairing step 3 now takes only the six digits: the PORT:CODE form was
+  removed from the input filter, the placeholder and the step instructions.
+  submitPairingInput still accepts PORT:CODE internally, so the manual-port
+  safety net is intact even though the UI no longer offers it; a plain 6-digit
+  code already routes through the auto-detected port.
+- NOTE: "Prime Memory" (Instant Vault / Memory Cannon) was deliberately KEPT.
+  It is a different feature from the removed "Priority" keep-game-in-RAM
+  toggle, and it still works.

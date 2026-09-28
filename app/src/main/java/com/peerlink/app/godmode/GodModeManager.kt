@@ -652,8 +652,8 @@ object GodModeManager {
     // Compatibility accessors: these legacy toggles changed global network
     // policy without improving the game tunnel, so new activations force them off.
     fun isCaptivePortalEnabled()  = false
-    fun getKeepGameInRam()        = prefs().getBoolean(KEY_KEEP_GAME,       false)
-    fun isAutoConnectEnabled()    = prefs().getBoolean(KEY_AUTO_CONNECT,    true)
+    fun getKeepGameInRam()        = false
+    fun isAutoConnectEnabled()    = false
     fun is5GhzOverrideEnabled()   = false
 
     fun setApexMasterEnabled(v: Boolean) {
@@ -666,8 +666,8 @@ object GodModeManager {
     fun setRamClearEnabled(v: Boolean)       { prefs().edit().putBoolean(KEY_RAM_CLEAR, false).apply() }
     fun setAirplaneShieldEnabled(v: Boolean) { prefs().edit().putBoolean(KEY_AIRPLANE_SH,   v).apply() }
     fun setCaptivePortalEnabled(@Suppress("UNUSED_PARAMETER") v: Boolean)  { prefs().edit().putBoolean(KEY_CAPTIVE, false).apply() }
-    fun setKeepGameInRam(v: Boolean)         { prefs().edit().putBoolean(KEY_KEEP_GAME,     v).apply(); AppState.appendLog("[PRIME-MODE ] keepGameInRam → $v") }
-    fun setAutoConnectEnabled(v: Boolean)    { prefs().edit().putBoolean(KEY_AUTO_CONNECT,  v).apply(); AppState.appendLog("[PRIME-MODE ] autoConnect → $v") }
+    fun setKeepGameInRam(v: Boolean)         { prefs().edit().putBoolean(KEY_KEEP_GAME,     false).apply() }
+    fun setAutoConnectEnabled(v: Boolean)    { prefs().edit().putBoolean(KEY_AUTO_CONNECT,  false).apply() }
     fun set5GhzOverrideEnabled(@Suppress("UNUSED_PARAMETER") v: Boolean)   { prefs().edit().putBoolean(KEY_5GHZ_OVERRIDE, false).apply() }
 
     // ─── Bootstrap state ──────────────────────────────────────────────────
