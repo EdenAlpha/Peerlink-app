@@ -637,7 +637,11 @@ private fun DisconnectCard(peerName: String, onDisconnect: () -> Unit) {
         }
         Text(if (waiting) "Bring both phones onto Wi-Fi" else if (denied) "Allow nearby discovery" else "Looking for your player",
             color = PL.ink, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
-        Text(discovery.message, color = PL.inkSoft, fontSize = 13.sp, lineHeight = 20.sp)
+        // The scanning blurb was removed from the main UI; only a real result
+        // (or a real problem) earns a line here.
+        if (discovery.message.isNotBlank()) {
+            Text(discovery.message, color = PL.inkSoft, fontSize = 13.sp, lineHeight = 20.sp)
+        }
         Text("Open PeerLink on your friend's phone too. You can use a phone hotspot or the same Wi-Fi network.",
             color = PL.muted, fontSize = 12.sp, lineHeight = 18.sp)
     }
@@ -807,24 +811,34 @@ private data class Tool(val key: String, val label: String, val icon: ImageVecto
             if (liveActive) LivePhaseBadge(live.phase) else if (lastMatch != null) ResultPill(lastMatch.result)
             Spacer(Modifier.weight(1f))
             Text(
-                if (liveActive) live.statusNote.ifBlank { "Match in progress" }
+                if (liveActive) live.statusNote.ifBlank { "In progress" }
                 else java.text.SimpleDateFormat("MMM d · HH:mm", java.util.Locale.getDefault()).format(java.util.Date(lastMatch!!.endedAtMs)),
-                fontSize = 10.sp, color = PL.muted, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                fontSize = 11.sp, color = PL.muted, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(start = 12.dp),
             )
         }
+        Spacer(Modifier.height(20.dp))
+        // Names sit on their own line above the score, so a long name can no
+        // longer squeeze the scoreboard into an unreadable sliver.
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
+            Text(me, fontSize = 15.sp, fontWeight = FontWeight.Bold, color = PL.ink,
+                maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+            Text(opponent, fontSize = 15.sp, fontWeight = FontWeight.Bold, color = PL.ink,
+                maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.End,
+                modifier = Modifier.weight(1f))
+        }
+        Spacer(Modifier.height(3.dp))
+        Row(Modifier.fillMaxWidth()) {
+            Text("YOU", fontSize = 9.sp, fontWeight = FontWeight.ExtraBold, color = PL.indigoGlow,
+                letterSpacing = 1.2.sp, modifier = Modifier.weight(1f))
+            Text("OPPONENT", fontSize = 9.sp, fontWeight = FontWeight.ExtraBold, color = PL.gold,
+                letterSpacing = 1.2.sp, textAlign = TextAlign.End, modifier = Modifier.weight(1f))
+        }
         Spacer(Modifier.height(16.dp))
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
-                Text(me, fontSize = 13.sp, fontWeight = FontWeight.Bold, color = PL.ink, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text("YOU", fontSize = 9.sp, fontWeight = FontWeight.ExtraBold, color = PL.indigoGlow, letterSpacing = 1.2.sp)
-            }
-            Crossfade(targetState = "$home – $away", label = "heroScore") { score ->
-                Text(score, fontSize = 34.sp, fontWeight = FontWeight.ExtraBold, color = PL.ink, letterSpacing = (-1).sp)
-            }
-            Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
-                Text(opponent, fontSize = 13.sp, fontWeight = FontWeight.Bold, color = PL.ink, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text("OPPONENT", fontSize = 9.sp, fontWeight = FontWeight.ExtraBold, color = PL.gold, letterSpacing = 1.2.sp)
-            }
+        // Score gets the full width to itself — nothing competes for the space.
+        Crossfade(targetState = "$home – $away", label = "heroScore") { score ->
+            Text(score, fontSize = 52.sp, fontWeight = FontWeight.ExtraBold, color = PL.ink,
+                letterSpacing = (-2).sp, modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center)
         }
         if (finished && lastMatch != null) {
             Spacer(Modifier.height(10.dp))
@@ -920,26 +934,33 @@ private data class Tool(val key: String, val label: String, val icon: ImageVecto
         Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).clickable { expanded = !expanded }) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 ResultPill(match.result)
-                Spacer(Modifier.width(10.dp))
+                Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f)) {
-                    Text("vs ${match.opponentName.ifBlank { "Opponent" }}", fontSize = 13.sp, fontWeight = FontWeight.Bold, color = PL.ink, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text("vs ${match.opponentName.ifBlank { "Opponent" }}", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = PL.ink, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Spacer(Modifier.height(3.dp))
+                    // Date and settlement status get one line each, so neither
+                    // phrase is ever broken in half by the column width.
                     Text(
-                        java.text.SimpleDateFormat("MMM d · HH:mm", java.util.Locale.getDefault()).format(java.util.Date(match.endedAtMs)) +
-                            "  ·  " + if (match.confirmed) "Verified and settled" else (match.settlementNote ?: "Unverified — no coins"),
-                        fontSize = 10.sp,
+                        java.text.SimpleDateFormat("MMM d · HH:mm", java.util.Locale.getDefault()).format(java.util.Date(match.endedAtMs)),
+                        fontSize = 11.sp, color = PL.muted, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        if (match.confirmed) "Verified and settled" else (match.settlementNote ?: "Unverified — no coins"),
+                        fontSize = 11.sp, fontWeight = FontWeight.SemiBold,
                         color = if (match.confirmed) PL.green else PL.gold,
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
+                        maxLines = 1, overflow = TextOverflow.Ellipsis,
                     )
                 }
-                Text("${match.myGoals} – ${match.opponentGoals}", fontSize = 20.sp, fontWeight = FontWeight.ExtraBold, color = PL.ink)
-                if (match.settledReward.totalCents != 0L) {
-                    Spacer(Modifier.width(10.dp))
-                    Text(
-                        (if (match.settledReward.totalCents > 0) "+" else "") + formatCents(match.settledReward.totalCents),
-                        fontSize = 11.sp, fontWeight = FontWeight.Bold,
-                        color = if (match.settledReward.totalCents > 0) PL.green else PL.red,
-                    )
+                Spacer(Modifier.width(10.dp))
+                Column(horizontalAlignment = Alignment.End) {
+                    Text("${match.myGoals} – ${match.opponentGoals}", fontSize = 20.sp, fontWeight = FontWeight.ExtraBold, color = PL.ink)
+                    if (match.settledReward.totalCents != 0L) {
+                        Text(
+                            (if (match.settledReward.totalCents > 0) "+" else "") + formatCents(match.settledReward.totalCents),
+                            fontSize = 11.sp, fontWeight = FontWeight.Bold,
+                            color = if (match.settledReward.totalCents > 0) PL.green else PL.red,
+                        )
+                    }
                 }
             }
             AnimatedVisibility(visible = expanded) {

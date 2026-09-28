@@ -780,7 +780,7 @@ class MainActivity : AppCompatActivity(), NsdDiscovery.NsdCallback {
         discoveryUiState = DiscoveryUiState(
             phase = if (_discoveredPeers.isEmpty()) DiscoveryPhase.SCANNING else DiscoveryPhase.PEERS_FOUND,
             message = when (_discoveredPeers.size) {
-                0 -> "Scanning the local link continuously"
+                0 -> ""
                 1 -> "1 player found"
                 else -> "${_discoveredPeers.size} players found"
             },
@@ -1572,7 +1572,7 @@ class MainActivity : AppCompatActivity(), NsdDiscovery.NsdCallback {
     private fun refreshDiscoveryPeerCount() {
         discoveryUiState = discoveryUiState.copy(
             phase = if (_discoveredPeers.isEmpty()) DiscoveryPhase.SCANNING else DiscoveryPhase.PEERS_FOUND,
-            message = if (_discoveredPeers.isEmpty()) "Scanning the local link continuously"
+            message = if (_discoveredPeers.isEmpty()) ""
                 else if (_discoveredPeers.size == 1) "1 player found"
                 else "${_discoveredPeers.size} players found",
             peerCount = _discoveredPeers.size,

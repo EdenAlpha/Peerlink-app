@@ -360,3 +360,17 @@ what actually disables Wi-Fi power save. Android 8/9 keep today's behavior
 throw). All failures fall back to the default attribution. No manifest change
 (WAKE_LOCK + <queries> already present). Source-verified against AOSP 10-15;
 the android-27 UPDATE_DEVICE_STATS gate confirmed for 8/9 only.
+
+## UI: activity screen layout + remove scanning blurb
+
+- Match hero: names now sit on their own line above the score instead of
+  flanking it, so a long name can no longer squeeze the scoreboard into a
+  sliver. Score moved to its own full-width line (34sp -> 52sp) with real
+  breathing room. Date/badgerow given its own spacing so they stop
+  colliding.
+- Match history row: date and settlement status are now one line each, so
+  "Verified and settled" is never broken across two lines. Score and reward
+  stacked in a right-aligned column instead of competing for one row.
+- Removed the "Scanning the local link continuously" line from the main UI.
+  The discovery message slot now renders only when there is a real result
+  ("1 player found") or a real problem, so no blank gap is left behind.
