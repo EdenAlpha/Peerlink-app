@@ -424,3 +424,14 @@ refuses to start the doomed watcher and says notifications must be on, because
 the notification is now the only place the code can be entered.
 
 Removed the now-unused pairingInput/pairingResult/pairingResultOk state.
+
+## Releases: one permanent release per build
+
+The publish step deleted and recreated a single rolling release
+(peerlink-debug-latest) on every push, so only one APK ever existed and no
+older build could be installed again. Releases are now:
+
+- build-<run_number>-<short sha> - permanent, title is the commit message
+  subject, so the release list reads as a plain history of what changed.
+- peerlink-debug-latest - kept only as a convenience pointer to the newest
+  build, still overwritten each time.

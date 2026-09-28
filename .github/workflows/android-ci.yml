@@ -50,10 +50,29 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          TAG="peerlink-debug-latest"
-          gh release delete "$TAG" --yes --cleanup-tag >/dev/null 2>&1 || true
+
+          # One PERMANENT release per build, named after the commit message, so
+          # every version is listed separately and any older build can still be
+          # installed. The old single rolling release destroyed that history.
+          SHORT="${GITHUB_SHA:0:7}"
+          TAG="build-${{ github.run_number }}-$SHORT"
+          NAME="$(git log -1 --pretty=%s | tr -d '\r' | cut -c1-70)"
+          {
+            echo "Commit: \`$GITHUB_SHA\`"
+            echo
+            git log -1 --pretty=%b | tr -d '\r' | cut -c1-1200
+          } > release-notes.md
+
           gh release create "$TAG" peerlink-debug.apk \
             --target "$GITHUB_SHA" \
+            --title "$NAME" \
+            --notes-file release-notes.md \
+            --prerelease
+
+          # Convenience pointer only: always the newest build, overwritten.
+          gh release delete "peerlink-debug-latest" --yes --cleanup-tag >/dev/null 2>&1 || true
+          gh release create "peerlink-debug-latest" peerlink-debug.apk \
+            --target "$GITHUB_SHA" \
             --title "PeerLink latest debug APK" \
-            --notes "Debug APK built from main commit $GITHUB_SHA" \
+            --notes "Newest build. Open the build-* releases for every earlier version." \
             --prerelease
